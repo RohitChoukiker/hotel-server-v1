@@ -1,0 +1,2 @@
+"""Isolated source scraper adapters."""
+

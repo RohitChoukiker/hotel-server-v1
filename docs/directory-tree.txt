@@ -1,0 +1,179 @@
+hotel-platform-backend/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+├── alembic/
+│   ├── versions/
+│   │   └── 20260911_0001_initial_schema.py
+│   ├── env.py
+│   └── script.py.mako
+├── app/
+│   ├── api/
+│   │   ├── v1/
+│   │   │   ├── __init__.py
+│   │   │   ├── admin.py
+│   │   │   ├── auth.py
+│   │   │   ├── chat.py
+│   │   │   ├── hotels.py
+│   │   │   ├── locations.py
+│   │   │   ├── onboarding.py
+│   │   │   ├── preferences.py
+│   │   │   ├── recommendations.py
+│   │   │   ├── reviews.py
+│   │   │   ├── router.py
+│   │   │   ├── trips.py
+│   │   │   └── users.py
+│   │   ├── __init__.py
+│   │   ├── errors.py
+│   │   ├── health.py
+│   │   └── responses.py
+│   ├── common/
+│   │   ├── __init__.py
+│   │   ├── cache.py
+│   │   ├── logging.py
+│   │   ├── middleware.py
+│   │   ├── observability.py
+│   │   ├── pagination.py
+│   │   ├── rate_limit.py
+│   │   └── security.py
+│   ├── domain/
+│   │   ├── __init__.py
+│   │   ├── ranking.py
+│   │   └── scoring.py
+│   ├── dto/
+│   │   ├── __init__.py
+│   │   ├── admin.py
+│   │   ├── auth.py
+│   │   ├── chat.py
+│   │   ├── common.py
+│   │   ├── hotels.py
+│   │   ├── locations.py
+│   │   ├── onboarding.py
+│   │   ├── preferences.py
+│   │   ├── recommendations.py
+│   │   ├── reviews.py
+│   │   ├── trips.py
+│   │   └── users.py
+│   ├── integrations/
+│   │   ├── llm/
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py
+│   │   │   ├── deterministic.py
+│   │   │   └── openai_structured.py
+│   │   ├── scraper/
+│   │   │   ├── __init__.py
+│   │   │   └── tripadvisor.py
+│   │   ├── storage/
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py
+│   │   │   ├── gcs.py
+│   │   │   └── local.py
+│   │   ├── __init__.py
+│   │   └── tasks.py
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── account.py
+│   │   ├── base.py
+│   │   ├── experience.py
+│   │   ├── geography.py
+│   │   ├── hotel.py
+│   │   ├── operations.py
+│   │   └── scoring.py
+│   ├── orchestrators/
+│   │   ├── __init__.py
+│   │   ├── chat.py
+│   │   ├── imports.py
+│   │   ├── onboarding.py
+│   │   └── scraper.py
+│   ├── repositories/
+│   │   ├── __init__.py
+│   │   ├── catalog.py
+│   │   ├── chat.py
+│   │   ├── locations.py
+│   │   ├── onboarding.py
+│   │   ├── operations.py
+│   │   ├── preferences.py
+│   │   ├── recommendations.py
+│   │   ├── trips.py
+│   │   └── users.py
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── admin.py
+│   │   ├── auth.py
+│   │   ├── catalog.py
+│   │   ├── chat.py
+│   │   ├── data_quality.py
+│   │   ├── imports.py
+│   │   ├── onboarding.py
+│   │   ├── preferences.py
+│   │   ├── recommendations.py
+│   │   ├── scoring.py
+│   │   ├── scraper.py
+│   │   ├── trips.py
+│   │   └── users.py
+│   ├── workers/
+│   │   ├── tasks/
+│   │   │   ├── __init__.py
+│   │   │   └── jobs.py
+│   │   ├── __init__.py
+│   │   └── celery_app.py
+│   ├── __init__.py
+│   ├── config.py
+│   ├── database.py
+│   ├── dependencies.py
+│   ├── enums.py
+│   ├── exceptions.py
+│   └── main.py
+├── data/
+│   └── mappings/
+│       └── india_folder_regions.json
+├── docs/
+│   ├── deployment-gcp.md
+│   ├── directory-tree.txt
+│   └── gcs-lifecycle.json
+├── nginx/
+│   ├── default.conf
+│   └── prod.conf
+├── scripts/
+│   ├── __init__.py
+│   ├── create_admin.py
+│   ├── import_hotels.py
+│   ├── import_reviews.py
+│   ├── materialize_production_env.sh
+│   ├── seed_reference_data.py
+│   └── validate_data.py
+├── tests/
+│   ├── e2e/
+│   │   ├── __init__.py
+│   │   ├── test_auth_flow.py
+│   │   └── test_product_flow.py
+│   ├── integration/
+│   │   ├── __init__.py
+│   │   ├── test_database.py
+│   │   └── test_imports.py
+│   ├── unit/
+│   │   ├── __init__.py
+│   │   ├── test_architecture_guards.py
+│   │   ├── test_config.py
+│   │   ├── test_import_validation.py
+│   │   ├── test_pagination.py
+│   │   ├── test_ranking.py
+│   │   ├── test_rate_limit.py
+│   │   ├── test_scoring.py
+│   │   ├── test_scraper_adapter.py
+│   │   ├── test_task_dispatcher.py
+│   │   └── test_text_interpreter.py
+│   └── __init__.py
+├── .dockerignore
+├── .env.example
+├── .env.production.example
+├── .gitignore
+├── .pre-commit-config.yaml
+├── alembic.ini
+├── deploy.sh
+├── docker-compose.prod.yml
+├── docker-compose.yml
+├── Dockerfile
+├── pyproject.toml
+├── README.md
+└── rollback.sh

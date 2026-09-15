@@ -1,0 +1,97 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hotel-platform-backend"
+version = "1.0.0"
+description = "Production backend for deterministic personalized hotel recommendations"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "aiofiles==24.1.0",
+  "alembic==1.16.5",
+  "argon2-cffi==25.1.0",
+  "asyncpg==0.30.0",
+  "celery[redis]==5.5.3",
+  "email-validator==2.3.0",
+  "fastapi==0.116.1",
+  "geoalchemy2==0.18.0",
+  "google-cloud-storage==3.3.1",
+  "httpx==0.28.1",
+  "orjson==3.11.3",
+  "prometheus-client==0.22.1",
+  "pydantic==2.11.9",
+  "pydantic-settings==2.10.1",
+  "pyjwt==2.10.1",
+  "python-multipart==0.0.20",
+  "redis==5.2.1",
+  "sentry-sdk[fastapi]==2.35.1",
+  "sqlalchemy[asyncio]==2.0.43",
+  "structlog==25.4.0",
+  "uvicorn[standard]==0.35.0",
+]
+
+[dependency-groups]
+dev = [
+  "bandit==1.8.6",
+  "black==25.1.0",
+  "coverage[toml]==7.10.6",
+  "httpx==0.28.1",
+  "isort==6.0.1",
+  "mypy==1.17.1",
+  "pre-commit==4.3.0",
+  "pip-audit==2.9.0",
+  "pytest==8.4.1",
+  "pytest-asyncio==1.1.0",
+  "pytest-cov==6.2.1",
+  "ruff==0.12.12",
+  "types-PyJWT==1.7.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "DTZ", "T20", "RET", "SIM"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
+exclude = ["alembic/versions"]
+
+[[tool.mypy.overrides]]
+module = ["celery.*", "geoalchemy2.*", "prometheus_client.*", "sentry_sdk.*", "structlog.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "integration: requires PostgreSQL/PostGIS and Redis",
+  "e2e: requires the complete Docker stack",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+omit = ["app/workers/celery_app.py"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true

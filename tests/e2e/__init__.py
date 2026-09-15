@@ -1,0 +1,2 @@
+"""Full application acceptance tests."""
+

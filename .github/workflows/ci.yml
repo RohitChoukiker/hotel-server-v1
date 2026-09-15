@@ -1,0 +1,82 @@
+name: backend-ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: hotel_test
+          POSTGRES_USER: hotel
+          POSTGRES_PASSWORD: hotel_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U hotel -d hotel_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7.4.5-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      APP__ENVIRONMENT: test
+      DATABASE__URL: postgresql+asyncpg://hotel:hotel_test@localhost:5432/hotel_test
+      REDIS__URL: redis://localhost:6379/0
+      JWT__SECRET_KEY: ci-only-secret-key-with-at-least-thirty-two-characters
+      STORAGE__LOCAL_PATH: /tmp/hotel-imports
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.17"
+      - run: uv sync --group dev
+      - run: uv run ruff check .
+      - run: uv run black --check .
+      - run: uv run isort --check-only .
+      - run: uv run mypy --strict app scripts
+      - run: uv run alembic upgrade head
+      - run: uv run alembic check
+      - run: uv run pytest tests -q --cov=app --cov-report=term-missing --cov-report=xml
+      - run: uv run bandit -q -r app
+      - run: uv run pip-audit
+      - run: docker build --pull --tag hotel-platform:${{ github.sha }} .
+      - run: docker compose -f docker-compose.prod.yml config
+        env:
+          BACKEND_IMAGE: hotel-platform:${{ github.sha }}
+          REDIS_PASSWORD: ci-compose-validation-only
+          API_DOMAIN: api.example.com
+
+  deploy-production:
+    if: github.ref == 'refs/heads/main'
+    needs: quality
+    runs-on: ubuntu-24.04
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud builds submit --tag "${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/hotel/backend:${{ github.sha }}"
+      - run: >-
+          gcloud compute ssh "${{ secrets.GCP_VM_NAME }}"
+          --zone "${{ secrets.GCP_ZONE }}"
+          --command "/opt/hotel-platform/deploy.sh '${{ github.sha }}'"

@@ -1,0 +1,87 @@
+name: hotel-platform-prod
+
+services:
+  redis:
+    image: redis:7.4.5-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - --maxmemory
+      - 1gb
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - redis_prod_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    restart: always
+    security_opt: ["no-new-privileges:true"]
+
+  backend:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    env_file: .env.production
+    volumes:
+      - import_prod_data:/data/imports
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    restart: always
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+
+  worker:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=4"]
+    env_file: .env.production
+    volumes:
+      - import_prod_data:/data/imports
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+    stop_grace_period: 90s
+    security_opt: ["no-new-privileges:true"]
+
+  beat:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    command: ["celery", "-A", "app.workers.celery_app:celery_app", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
+    env_file: .env.production
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+    security_opt: ["no-new-privileges:true"]
+
+  nginx:
+    image: nginx:1.29.1-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/prod.conf:/etc/nginx/templates/default.conf.template:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?API_DOMAIN is required}
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: always
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  redis_prod_data:
+  import_prod_data:
