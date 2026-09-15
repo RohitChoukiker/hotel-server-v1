@@ -21,7 +21,7 @@ from app.repositories.catalog import HotelRepository, ReviewRepository
 from app.repositories.locations import LocationRepository
 from app.repositories.operations import DataQualityRepository, ImportJobRepository
 
-HOTEL_COLUMNS = {"locationId", "name", "city", "latitude", "longitude"}
+HOTEL_COLUMNS = {"locationId", "name", "city"}
 REVIEW_COLUMNS = {"hotel_location_id", "review_id", "review_rating"}
 
 
@@ -137,7 +137,11 @@ class CSVImportOrchestrator:
                 "telephone": self._optional_text(row.get("telephone")),
                 "latitude": latitude,
                 "longitude": longitude,
-                "geo_location": WKTElement(f"POINT({longitude} {latitude})", srid=4326),
+                "geo_location": (
+                    WKTElement(f"POINT({longitude} {latitude})", srid=4326)
+                    if latitude is not None and longitude is not None
+                    else None
+                ),
                 "is_active": True,
             },
             job.source_id,
@@ -308,8 +312,12 @@ class CSVImportOrchestrator:
         return int(parsed) if parsed is not None else None
 
     @staticmethod
-    def _coordinate(value: str | None, low: float, high: float, name: str) -> float:
-        parsed = CSVImportOrchestrator._required_float(value, name)
+    def _coordinate(
+        value: str | None, low: float, high: float, name: str
+    ) -> float | None:
+        parsed = CSVImportOrchestrator._optional_float(value)
+        if parsed is None:
+            return None
         if not low <= parsed <= high:
             raise ImportValidationError(f"INVALID_{name.upper()}")
         return parsed

@@ -52,8 +52,8 @@ class HotelListItem(DTO):
     city: str
     region: str
     country: str
-    latitude: float
-    longitude: float
+    latitude: float | None
+    longitude: float | None
     source_rating: float | None = None
     source_review_count: int | None = None
     primary_image_url: str | None = None

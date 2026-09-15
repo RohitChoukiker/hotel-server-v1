@@ -53,9 +53,11 @@ class Hotel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     address: Mapped[str | None] = mapped_column(Text)
     postal_code: Mapped[str | None] = mapped_column(String(32))
     telephone: Mapped[str | None] = mapped_column(String(64))
-    latitude: Mapped[float] = mapped_column(Numeric(9, 6), nullable=False)
-    longitude: Mapped[float] = mapped_column(Numeric(9, 6), nullable=False)
-    geo_location: Mapped[Any] = mapped_column(Geography("POINT", srid=4326), nullable=False)
+    latitude: Mapped[float | None] = mapped_column(Numeric(9, 6), nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Numeric(9, 6), nullable=True)
+    geo_location: Mapped[Any | None] = mapped_column(
+        Geography("POINT", srid=4326), nullable=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
