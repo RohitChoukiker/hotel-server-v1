@@ -59,7 +59,7 @@ Create `hotel_attribute_sentiment_aggregates` with:
 - `id UUID` primary key.
 - `hotel_id UUID` foreign key to `hotels`, cascade delete.
 - `attribute_id UUID` foreign key to `attributes`, restrict delete.
-- `source_id UUID` foreign key to `data_sources`, set null on delete where supported.
+- `source_id UUID` non-null foreign key to `data_sources` with restricted deletion.
 - `category_name` containing the normalized category key used for matching.
 - `raw_attribute_key` containing the exact input attribute key.
 - `sentiment` containing canonical uppercase `POSITIVE`, `NEGATIVE`, or `NEUTRAL`.
@@ -73,7 +73,7 @@ Create `hotel_attribute_sentiment_aggregates` with:
 
 The idempotency constraint is:
 
-`UNIQUE (hotel_id, attribute_id, analysis_version, review_window)`
+`UNIQUE (hotel_id, attribute_id, source_id, analysis_version, review_window)`
 
 Indexes cover `hotel_id`, `attribute_id`, `source_id`, and `(analysis_version, review_window)`.
 
@@ -87,6 +87,12 @@ Add a persisted `normalized_key` to both `attribute_categories` and `attributes`
 - Attribute normalized keys are unique within `category_id`.
 - Existing records are backfilled deterministically from category code/name and attribute slug/name.
 - Existing public attribute slugs are never rewritten.
+
+Before adding either normalized-key uniqueness constraint, the migration queries
+the backfilled values for collisions. If any collision exists, the migration
+aborts without merging, renaming, or deleting taxonomy and raises an actionable
+error that lists the conflicting category or attribute identifiers and normalized
+key.
 
 Normalization uses Unicode NFKC normalization, trimming, case folding, conversion of runs of non-alphanumeric characters (including underscores and whitespace) to a single hyphen, and removal of leading/trailing hyphens. A key that normalizes to empty is malformed.
 
@@ -110,17 +116,19 @@ Add explicit, nonnegative `import_jobs` counters:
 
 - `hotels_read`
 - `hotels_matched`
+- `hotels_failed`
 - `attributes_seen`
 - `attributes_processed`
 - `attributes_inserted`
 - `attributes_updated`
 - `attributes_skipped_zero_mentions`
+- `attributes_failed`
 - `score_updates_applied`
 - `score_updates_skipped_precedence`
 - `unknown_hotels`
 - `auto_created_attributes`
 
-`records_read` remains for compatibility and always equals `hotels_read` for sentiment imports. Existing `inserted` and `updated` also remain; for sentiment imports only, they mirror `attributes_inserted` and `attributes_updated`, meaning aggregate-table rows rather than score rows. `failed` counts rejected hotel records plus malformed or ambiguously mapped attributes. Score propagation skipped due to precedence is not a failure.
+`records_read` remains for compatibility and always equals `hotels_read` for sentiment imports. Existing `inserted` and `updated` also remain; for sentiment imports only, they mirror `attributes_inserted` and `attributes_updated`, meaning aggregate-table rows rather than score rows. `failed` mirrors `hotels_failed` and counts only rejected hotel-level JSONL records, so it never exceeds `records_read`. Attribute validation and mapping failures increment only `attributes_failed`. Score propagation skipped due to precedence is not a failure.
 
 The import-job read DTO exposes the explicit counters.
 
@@ -147,7 +155,7 @@ Each nonblank JSONL line increments both `hotels_read` and `records_read`. A lin
 - Nonnegative integer `reviews_analyzed` (booleans are rejected as integers).
 - An object-valued `attributes` field whose category values are objects.
 
-The upstream hotel identity is `str(hotel_id)` and is resolved through the existing exact `(import_jobs.source_id, hotel_source_mappings.source_hotel_id)` mapping. The importer does not assume the value is an internal UUID. An unknown hotel increments `unknown_hotels`, records an `UNKNOWN_SENTIMENT_HOTEL` issue, increments `failed`, and continues.
+The upstream hotel identity is `str(hotel_id)` and is resolved through the existing exact `(import_jobs.source_id, hotel_source_mappings.source_hotel_id)` mapping. The importer does not assume the value is an internal UUID. An unknown hotel increments `unknown_hotels`, records an `UNKNOWN_SENTIMENT_HOTEL` issue, increments both `hotels_failed` and compatibility `failed`, and continues.
 
 Each attribute entry increments `attributes_seen`. Its sentiment object must contain:
 
@@ -155,9 +163,9 @@ Each attribute entry increments `attributes_seen`. Its sentiment object must con
 - Integer `mentions`, `positive_mentions`, and `negative_mentions`, each at least zero.
 - Counts satisfying `positive_mentions + negative_mentions <= mentions`.
 
-`mentions == 0` increments `attributes_skipped_zero_mentions` and `skipped`; it does not resolve or create taxonomy and does not persist an aggregate. A malformed category or attribute records a row-level data-quality issue, increments `failed`, and continues with other safe attributes. A valid mapped attribute increments `attributes_processed` after its aggregate upsert succeeds.
+`mentions == 0` increments `attributes_skipped_zero_mentions` and `skipped`; it does not resolve or create taxonomy and does not persist an aggregate. A malformed category or attribute records a row-level data-quality issue, increments `attributes_failed`, and continues with other safe attributes without changing `failed`. A valid mapped attribute increments `attributes_processed` after its aggregate upsert succeeds.
 
-Malformed JSON or invalid hotel-level fields reject that hotel line without stopping the import. Blank lines are ignored and do not affect counters.
+Malformed JSON or invalid hotel-level fields reject that hotel line without stopping the import and increment both `hotels_failed` and compatibility `failed`. Blank lines are ignored and do not affect counters.
 
 ## Aggregate Scoring
 
@@ -175,7 +183,7 @@ The score is stored in the aggregate row and propagated unchanged as `raw_score`
 
 The dedicated aggregate scoring method obtains the active `AlgorithmVersion`, applies centralized precedence, and writes `calculated_at` plus aggregate provenance. It never invokes a text interpreter or LLM.
 
-After a completed import with at least one applied score update, existing global normalization runs once over the resulting active-algorithm score population. Review-based and aggregate-sentiment scores can therefore share the existing normalized comparison fields, while documentation explicitly states that their raw 0–5 values use different calculation methods.
+After either successful terminal state, `COMPLETED` or `PARTIAL`, with at least one applied score update, existing global normalization runs once over the resulting active-algorithm score population. Review-based and aggregate-sentiment scores can therefore share the existing normalized comparison fields, while documentation explicitly states that their raw 0–5 values use different calculation methods.
 
 ## Streaming, Transactions, and Idempotency
 
@@ -207,6 +215,7 @@ Unit tests cover normalization, deterministic slug generation, aggregate score m
 - Existing aggregate score replacement by the review-derived recalculation path.
 - Normalization of eligible imported scores.
 - All explicit import-job counters and compatibility counter semantics.
+- Taxonomy migration collision detection with actionable category/attribute details.
 - No inserted `review_attribute_mentions`.
 - Existing hotel/review CSV import behavior remains passing.
 
