@@ -45,6 +45,27 @@ Live ranking:
 
 No raw reviews are scanned and no LLM is called in the live recommendation request.
 
+Adaptive onboarding is persisted per session and asks one bounded question at a time. Q1 is the
+only deterministic user-facing onboarding question: `Where are you travelling to?`. Every later
+question and the final profile come from Anthropic Claude using forced tool output validated against
+the onboarding DTOs. Claude receives the destination, the complete prior conversation, inferred
+signals, and covered semantic dimensions, and must not treat uncertain destination characteristics
+as facts. If Claude is unavailable, the API returns an error; it never serves a static or local
+adaptive fallback. Unknown semantic attributes are reported as unresolved and are never created
+automatically. The final profile is stored as `ONBOARDING_AI` preferences; manual preferences
+remain the higher-precedence source. Adaptive onboarding does not call or alter the deterministic
+hotel scoring/ranking formulas.
+
+Adaptive onboarding uses the canonical `LLM__PROVIDER=anthropic`,
+`LLM__BASE_URL=https://api.anthropic.com`, `LLM__API_KEY`, `LLM__MODEL=claude-sonnet-4-5`, and
+`LLM__TIMEOUT_S` settings. A missing key, non-Anthropic provider, authentication failure,
+rate-limit response, timeout, or invalid Claude output fails onboarding safely; no local adaptive
+fallback is used.
+
+Legacy `STATIC` sessions are retained for history but are not continued. Starting onboarding marks
+an active legacy session as restart-required and creates a new `ADAPTIVE` session. Legacy question
+sets and questions are no longer seeded or read by the active onboarding flow.
+
 ## Local start
 
 Requirements: Docker Engine with Compose v2.
@@ -150,6 +171,7 @@ Operations (`DATA_OPERATOR` or `ADMIN`, except user/role operations which requir
 
 - `POST /api/v1/admin/imports/hotels`
 - `POST /api/v1/admin/imports/reviews`
+- `POST /api/v1/admin/imports/sentiment-analysis`
 - `GET /api/v1/admin/imports`
 - `GET /api/v1/admin/imports/{job_id}`
 - `GET /api/v1/admin/scrape-runs`
@@ -184,13 +206,26 @@ Operations endpoints:
 
 Hotel imports require explicit `country_id` and `region_id`; review joins always use `(source_id, hotel_location_id)`. Raw files are copied unchanged into the configured object store. Jobs checkpoint by row and use provider unique constraints for repeat-safe upserts. Invalid rows are recorded in `data_quality_issues` with their raw row and reason.
 
-Before importing a region, create canonical cities with `POST /api/v1/admin/locations/cities`. The import deliberately reports `MISSING_CITY` instead of silently creating ambiguous city spellings. Validate legacy folders without changing them:
+Hotel imports resolve trimmed city names case-insensitively within the selected region. Missing cities are created automatically in that region with no invented coordinates or timezone; countries and regions are never auto-created. Validate legacy folders without changing them:
 
 ```bash
 uv run python scripts/validate_data.py /path/to/india-data
 ```
 
 The mapping explicitly retains both `dadar-and-nagar` and `daman-diu` inputs while mapping them to the current combined Union Territory.
+
+## JSONL sentiment import
+
+`POST /api/v1/admin/imports/sentiment-analysis` accepts a non-empty `.jsonl` upload. Each nonblank line must contain `hotel_id`, `analysis_mode`, `reviews_analyzed`, and `attributes`. `analysis_version`, `review_window`, and `has_recent_reviews` are optional; omitted provenance uses `unspecified` identity values and an unknown recent-review flag. The upstream `hotel_id` is resolved exactly through `(source_id, hotel_source_mappings.source_hotel_id)`.
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@sentiment.jsonl;type=application/x-ndjson" \
+  "http://localhost:8000/api/v1/admin/imports/sentiment-analysis?source_code=TRIPADVISOR"
+```
+
+Aggregate identity is `(hotel_id, attribute_id, source_id, analysis_version, review_window)`, so re-uploading the same source/version/window updates one row. `mentions == 0` is skipped before taxonomy creation. `inserted`/`updated` count aggregate rows; hotel-record failures are reported by `failed`, while attribute validation/mapping failures use `attributes_failed`. Aggregate scores use mention balance mapped directly to 0–5. Review-based scores retain the existing normalized-rating `±1` formula and take precedence atomically over `aggregate_sentiment`; sentiment imports never create review-level mentions or invoke review extraction.
 
 ## Quality gates
 
@@ -221,7 +256,7 @@ External values still required for a real deployment:
 - Redis password and URL.
 - GCP project and GCS bucket.
 - Sentry DSN (optional but recommended).
-- OpenAI-compatible API key only if `LLM__PROVIDER=openai`; `deterministic` is the safe offline fallback.
+- Claude API key is required for live adaptive onboarding; the deterministic adapter is retained only for non-onboarding text interpretation when explicitly configured.
 - Authorized TripAdvisor session cookie and explicit source `geoId` values only if scraping is legally/contractually authorized. The code never invents geoIds and defaults scraping off.
 - Domain/DNS, TLS certificate email, Artifact Registry and deployment identity.
 

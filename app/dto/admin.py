@@ -17,7 +17,7 @@ class JobAccepted(DTO):
 
 
 class ImportJobRead(DTO):
-    """CSV import status and statistics."""
+    """Import status and statistics."""
 
     id: uuid.UUID
     status: str
@@ -36,6 +36,19 @@ class ImportJobRead(DTO):
     completed_at: datetime | None
     error: str | None
     checkpoint: dict[str, Any] | None
+    hotels_read: int = 0
+    hotels_matched: int = 0
+    hotels_failed: int = 0
+    attributes_seen: int = 0
+    attributes_processed: int = 0
+    attributes_inserted: int = 0
+    attributes_updated: int = 0
+    attributes_skipped_zero_mentions: int = 0
+    attributes_failed: int = 0
+    score_updates_applied: int = 0
+    score_updates_skipped_precedence: int = 0
+    unknown_hotels: int = 0
+    auto_created_attributes: int = 0
 
 
 class ScrapeRunRead(DTO):

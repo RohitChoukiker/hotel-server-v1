@@ -23,15 +23,11 @@ class DeterministicTextInterpreter:
         outputs: list[AttributeMentionOutput] = []
         for slug in allowed_attribute_slugs:
             phrases = {slug.replace("-", " "), slug.replace("-", "")}
-            matched_phrase = next(
-                (phrase for phrase in phrases if phrase in lowered), None
-            )
+            matched_phrase = next((phrase for phrase in phrases if phrase in lowered), None)
             if matched_phrase is None:
                 continue
             clauses = re.split(r"\b(?:but|however|although|though|while)\b", lowered)
-            context = next(
-                (clause for clause in clauses if matched_phrase in clause), lowered
-            )
+            context = next((clause for clause in clauses if matched_phrase in clause), lowered)
             sentiment = self._sentiment(context.split())
             outputs.append(
                 AttributeMentionOutput(
@@ -73,7 +69,16 @@ class DeterministicTextInterpreter:
         """Classify explicit hotel operations without hidden reasoning."""
         text = message.casefold()
         rules: list[tuple[Iterable[str], ChatIntent]] = [
-            (("negative review", "bad review", "complaint"), ChatIntent.SHOW_NEGATIVE_REVIEWS),
+            (
+                (
+                    "negative review",
+                    "negative reviews",
+                    "show negative",
+                    "bad review",
+                    "complaint",
+                ),
+                ChatIntent.SHOW_NEGATIVE_REVIEWS,
+            ),
             (("compare", "versus", " vs "), ChatIntent.COMPARE_HOTELS),
             (("image", "photo"), ChatIntent.SHOW_IMAGES),
             (("attribute", "score"), ChatIntent.SHOW_ATTRIBUTES),

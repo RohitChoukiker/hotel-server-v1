@@ -35,7 +35,7 @@ class OpenAIStructuredInterpreter:
                     }
                 },
             },
-            timeout=self._config.timeout_seconds,
+            timeout=self._config.timeout_s,
         )
         response.raise_for_status()
         payload = response.json()

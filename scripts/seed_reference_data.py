@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app.config import get_settings
 from app.database import create_engine, create_session_factory
+from app.domain.sentiment import normalize_taxonomy_key
 from app.models import (
     AlgorithmVersion,
     Attribute,
@@ -15,8 +16,6 @@ from app.models import (
     AttributeCategory,
     Country,
     DataSource,
-    OnboardingQuestion,
-    OnboardingQuestionSet,
     Region,
 )
 
@@ -113,7 +112,6 @@ async def seed() -> None:
     factory = create_session_factory(engine)
     now = datetime.now(UTC)
     india_id = stable_id("country:IN")
-    question_set_id = stable_id("onboarding:hotel-preferences:v1")
     async with factory() as session:
         await session.execute(
             insert(Country)
@@ -159,6 +157,7 @@ async def seed() -> None:
                     id=category_id,
                     code=code,
                     name=code.title(),
+                    normalized_key=normalize_taxonomy_key(code),
                     display_order=category_order,
                     is_active=True,
                 )
@@ -174,6 +173,7 @@ async def seed() -> None:
                         category_id=category_id,
                         name=name,
                         slug=slug,
+                        normalized_key=normalize_taxonomy_key(name),
                         description=f"Review-derived {name.lower()} score",
                         value_type="SCORE",
                         display_order=display_order,
@@ -191,9 +191,7 @@ async def seed() -> None:
                         is_active=True,
                         created_at=now,
                     )
-                    .on_conflict_do_nothing(
-                        index_elements=["attribute_id", "alias", "language"]
-                    )
+                    .on_conflict_do_nothing(index_elements=["attribute_id", "alias", "language"])
                 )
         await session.execute(
             insert(AlgorithmVersion)
@@ -215,72 +213,6 @@ async def seed() -> None:
             )
             .on_conflict_do_nothing(index_elements=["name", "version"])
         )
-        await session.execute(
-            insert(OnboardingQuestionSet)
-            .values(
-                id=question_set_id,
-                name="hotel-preferences",
-                version=1,
-                is_active=True,
-            )
-            .on_conflict_do_nothing(index_elements=["name", "version"])
-        )
-        questions: list[tuple[str, str, list[str]]] = [
-            (
-                "room_priorities",
-                "Which room qualities matter most?",
-                ["cleanliness", "room-comfort", "bed-comfort", "room-size"],
-            ),
-            (
-                "room_environment",
-                "What room environment do you prefer?",
-                ["quietness", "noise-level", "room-view", "room-condition"],
-            ),
-            (
-                "essential_amenities",
-                "Which amenities are essential?",
-                ["wifi", "breakfast", "pool", "parking"],
-            ),
-            ("wellness", "How important are wellness facilities?", ["gym", "spa", "pool"]),
-            (
-                "food",
-                "What food services do you value?",
-                ["breakfast", "restaurant", "room-service"],
-            ),
-            (
-                "connectivity",
-                "Which transport connections matter?",
-                ["airport-accessibility", "public-transport", "city-center-access"],
-            ),
-            (
-                "surroundings",
-                "What surroundings fit your trip?",
-                ["beach-access", "quietness", "nightlife", "nearby-restaurants"],
-            ),
-            (
-                "sightseeing",
-                "How important is nearby sightseeing?",
-                ["tourist-attractions", "city-center-access"],
-            ),
-        ]
-        for position, (code, prompt, options) in enumerate(questions, start=1):
-            await session.execute(
-                insert(OnboardingQuestion)
-                .values(
-                    id=stable_id(f"onboarding-question:v1:{code}"),
-                    question_set_id=question_set_id,
-                    code=code,
-                    prompt=prompt,
-                    answer_type="MULTI_WEIGHT",
-                    options=[
-                        {"value": item, "label": item.replace("-", " ").title()}
-                        for item in options
-                    ],
-                    position=position,
-                    is_required=True,
-                )
-                .on_conflict_do_nothing(index_elements=["question_set_id", "position"])
-            )
         await session.commit()
     await engine.dispose()
 

@@ -17,7 +17,7 @@ from app.repositories.operations import AuditRepository, ImportJobRepository
 
 
 class ImportService:
-    """Validate and stage CSV import jobs; processing happens in Celery."""
+    """Validate and stage immutable import jobs; processing happens in Celery."""
 
     def __init__(self, session: AsyncSession, storage: ObjectStorage) -> None:
         self._session = session
@@ -36,9 +36,14 @@ class ImportService:
         region_id: uuid.UUID | None,
         actor_user_id: uuid.UUID | None = None,
     ) -> ImportJob:
-        """Copy a CSV unchanged to immutable storage and create a pending job."""
-        if Path(file_name).suffix.casefold() != ".csv":
-            raise ImportValidationError("Only CSV files are accepted")
+        """Copy an import unchanged to immutable storage and create a pending job."""
+        expected_suffix = {
+            ImportType.HOTELS: ".csv",
+            ImportType.REVIEWS: ".csv",
+            ImportType.SENTIMENT_ANALYSIS: ".jsonl",
+        }[import_type]
+        if Path(file_name).suffix.casefold() != expected_suffix:
+            raise ImportValidationError(f"Only {expected_suffix} files are accepted")
         source = await self._sources.get_by_code(source_code)
         if source is None:
             raise UnsupportedSourceError()
@@ -51,7 +56,12 @@ class ImportService:
         digest, size = await self._storage.put(object_key, chunks)
         if size == 0:
             await self._storage.delete(object_key)
-            raise ImportValidationError("CSV file is empty")
+            empty_message = (
+                "JSONL file is empty"
+                if import_type == ImportType.SENTIMENT_ANALYSIS
+                else "CSV file is empty"
+            )
+            raise ImportValidationError(empty_message)
         job = ImportJob(
             id=job_id,
             status=JobStatus.PENDING.value,
@@ -86,8 +96,6 @@ class ImportService:
             try:
                 await self._storage.delete(object_key)
             except Exception:
-                get_logger().exception(
-                    "rejected_import_cleanup_failed", object_key=object_key
-                )
+                get_logger().exception("rejected_import_cleanup_failed", object_key=object_key)
             raise
         return job

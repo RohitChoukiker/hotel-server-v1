@@ -21,6 +21,85 @@ from app.models import NormalizationRun, Review, ReviewAttributeMention
 from app.repositories.catalog import AttributeRepository, ReviewRepository
 
 
+class ScoreNormalizationService:
+    """Normalize the active-algorithm score population."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._attributes = AttributeRepository(session)
+
+    async def normalize(
+        self,
+        scope_type: ScopeType = ScopeType.GLOBAL,
+        country_id: uuid.UUID | None = None,
+        region_id: uuid.UUID | None = None,
+        city_id: uuid.UUID | None = None,
+        hotel_type: str | None = None,
+        hotel_ids: list[uuid.UUID] | None = None,
+        attribute_ids: list[uuid.UUID] | None = None,
+    ) -> int:
+        """Bell-curve normalize scores across an explicit comparable scope."""
+        if scope_type == ScopeType.COUNTRY and country_id is None:
+            raise ScoringError("Country scope requires country_id")
+        if scope_type == ScopeType.REGION and region_id is None:
+            raise ScoringError("Region scope requires region_id")
+        if scope_type == ScopeType.CITY and city_id is None:
+            raise ScoringError("City scope requires city_id")
+        if scope_type == ScopeType.SEARCH_SET and not hotel_ids:
+            raise ScoringError("Search-set scope requires hotel_ids")
+        algorithm = await self._attributes.active_algorithm()
+        if algorithm is None:
+            raise ScoringError("No active algorithm version")
+        attribute_ids = (
+            attribute_ids
+            if attribute_ids is not None
+            else await self._attributes.attribute_ids_with_scores(algorithm.id)
+        )
+        updated = 0
+        for attribute_id in attribute_ids:
+            population = await self._attributes.score_population(
+                attribute_id,
+                algorithm.id,
+                country_id,
+                region_id,
+                city_id,
+                hotel_type,
+                hotel_ids,
+            )
+            if not population:
+                continue
+            stats = population_statistics(
+                [float(item.score_5) for item in population if item.score_5 is not None]
+            )
+            self._session.add(
+                NormalizationRun(
+                    attribute_id=attribute_id,
+                    scope_type=scope_type.value,
+                    country_id=country_id,
+                    region_id=region_id,
+                    city_id=city_id,
+                    hotel_type=hotel_type,
+                    population_size=stats.size,
+                    mean_score=stats.mean,
+                    standard_deviation=stats.standard_deviation,
+                    algorithm_version_id=algorithm.id,
+                    calculated_at=datetime.now(UTC),
+                )
+            )
+            for item in population:
+                if item.score_5 is None:
+                    continue
+                z, relative = normalize_value(float(item.score_5), stats)
+                item.mean = Decimal(str(stats.mean))
+                item.standard_deviation = Decimal(str(stats.standard_deviation))
+                item.z_score = Decimal(str(z))
+                item.relative_score_5 = Decimal(str(relative))
+                updated += 1
+        await self._session.commit()
+        get_logger().info("normalization_completed", scope=scope_type.value, updated=updated)
+        return updated
+
+
 class ScoringService:
     """Own background review extraction, aggregation, and normalization."""
 
@@ -119,6 +198,10 @@ class ScoringService:
                     "z_score": None,
                     "relative_score_5": None,
                     "confidence_score": confidence,
+                    "scoring_source": "review_based",
+                    "analysis_version": None,
+                    "review_window": None,
+                    "imported_at": None,
                     "calculated_at": now,
                 }
             )
@@ -152,61 +235,10 @@ class ScoringService:
         hotel_type: str | None = None,
         hotel_ids: list[uuid.UUID] | None = None,
     ) -> int:
-        """Bell-curve normalize scores across an explicit comparable scope."""
-        self._validate_scope(
-            scope_type, country_id, region_id, city_id, hotel_ids
+        """Normalize using the shared normalization service."""
+        return await ScoreNormalizationService(self._session).normalize(
+            scope_type, country_id, region_id, city_id, hotel_type, hotel_ids
         )
-        algorithm = await self._attributes.active_algorithm()
-        if algorithm is None:
-            raise ScoringError("No active algorithm version")
-        attribute_ids = await self._attributes.attribute_ids_with_scores(algorithm.id)
-        updated = 0
-        for attribute_id in attribute_ids:
-            population = await self._attributes.score_population(
-                attribute_id,
-                algorithm.id,
-                country_id,
-                region_id,
-                city_id,
-                hotel_type,
-                hotel_ids,
-            )
-            if not population:
-                continue
-            stats = population_statistics(
-                [
-                    float(item.score_5)
-                    for item in population
-                    if item.score_5 is not None
-                ]
-            )
-            self._session.add(
-                NormalizationRun(
-                    attribute_id=attribute_id,
-                    scope_type=scope_type.value,
-                    country_id=country_id,
-                    region_id=region_id,
-                    city_id=city_id,
-                    hotel_type=hotel_type,
-                    population_size=stats.size,
-                    mean_score=stats.mean,
-                    standard_deviation=stats.standard_deviation,
-                    algorithm_version_id=algorithm.id,
-                    calculated_at=datetime.now(UTC),
-                )
-            )
-            for item in population:
-                if item.score_5 is None:
-                    continue
-                z, relative = normalize_value(float(item.score_5), stats)
-                item.mean = Decimal(str(stats.mean))
-                item.standard_deviation = Decimal(str(stats.standard_deviation))
-                item.z_score = Decimal(str(z))
-                item.relative_score_5 = Decimal(str(relative))
-                updated += 1
-        await self._session.commit()
-        get_logger().info("normalization_completed", scope=scope_type.value, updated=updated)
-        return updated
 
     @staticmethod
     def _mention_model(

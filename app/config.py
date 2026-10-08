@@ -4,13 +4,21 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    AnyHttpUrl,
+    BaseModel,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.enums import Environment
 
 
-class AppConfig(BaseSettings):
+class AppConfig(BaseModel):
     """HTTP application settings."""
 
     environment: Environment = Environment.DEVELOPMENT
@@ -22,7 +30,7 @@ class AppConfig(BaseSettings):
     max_request_bytes: int = 2 * 1024 * 1024 * 1024
 
 
-class DatabaseConfig(BaseSettings):
+class DatabaseConfig(BaseModel):
     """PostgreSQL connection pool settings."""
 
     url: SecretStr = SecretStr("postgresql+asyncpg://hotel:hotel@postgres:5432/hotel")
@@ -39,7 +47,7 @@ class DatabaseConfig(BaseSettings):
         return value
 
 
-class RedisConfig(BaseSettings):
+class RedisConfig(BaseModel):
     """Redis cache, queue, and rate-limit settings."""
 
     url: SecretStr = SecretStr("redis://redis:6379/0")
@@ -55,7 +63,7 @@ class RedisConfig(BaseSettings):
         return value
 
 
-class JWTConfig(BaseSettings):
+class JWTConfig(BaseModel):
     """JWT signing and lifetime settings."""
 
     secret_key: SecretStr = SecretStr("development-only-secret-change-me-123456")
@@ -66,7 +74,7 @@ class JWTConfig(BaseSettings):
     audience: str = "hotel-platform-users"
 
 
-class CORSConfig(BaseSettings):
+class CORSConfig(BaseModel):
     """Cross-origin request settings."""
 
     allowed_origins: list[str] = ["http://localhost:3000"]
@@ -81,31 +89,33 @@ class CORSConfig(BaseSettings):
         return value
 
 
-class LoggingConfig(BaseSettings):
+class LoggingConfig(BaseModel):
     """Logging settings."""
 
     level: str = "INFO"
     json_logs: bool = True
 
 
-class SentryConfig(BaseSettings):
+class SentryConfig(BaseModel):
     """Sentry telemetry settings."""
 
     dsn: SecretStr | None = None
     traces_sample_rate: float = Field(default=0.1, ge=0.0, le=1.0)
 
 
-class LLMConfig(BaseSettings):
-    """Structured LLM adapter settings."""
+class LLMConfig(BaseModel):
+    """Structured LLM settings; adaptive onboarding is Claude-only at runtime."""
 
-    provider: Literal["deterministic", "openai"] = "deterministic"
-    base_url: AnyHttpUrl = AnyHttpUrl("https://api.openai.com/v1")
+    provider: Literal["deterministic", "openai", "anthropic"] = "anthropic"
+    base_url: AnyHttpUrl | None = AnyHttpUrl("https://api.anthropic.com")
     api_key: SecretStr | None = None
-    model: str = "gpt-5-mini"
-    timeout_seconds: int = Field(default=30, ge=1, le=120)
+    model: str = "claude-sonnet-4-5"
+    timeout_s: int = Field(default=30, ge=1, le=120)
+    max_retries: int = Field(default=2, ge=0, le=5)
+    prompt_version: str = Field(default="adaptive-onboarding-v1", min_length=1, max_length=80)
 
 
-class StorageConfig(BaseSettings):
+class StorageConfig(BaseModel):
     """Import object-storage settings."""
 
     backend: Literal["local", "gcs"] = "local"
@@ -113,14 +123,14 @@ class StorageConfig(BaseSettings):
     gcs_bucket: str | None = None
 
 
-class GCPConfig(BaseSettings):
+class GCPConfig(BaseModel):
     """Google Cloud integration settings."""
 
     project_id: str | None = None
     secret_prefix: str = "hotel-platform"
 
 
-class WorkerConfig(BaseSettings):
+class WorkerConfig(BaseModel):
     """Worker throughput settings."""
 
     task_time_limit_seconds: int = Field(default=3600, ge=60)
@@ -128,7 +138,7 @@ class WorkerConfig(BaseSettings):
     scraper_concurrency: int = Field(default=4, ge=1, le=20)
 
 
-class RateLimitsConfig(BaseSettings):
+class RateLimitsConfig(BaseModel):
     """Named endpoint rate limits."""
 
     auth: str = "10/minute"
@@ -138,7 +148,7 @@ class RateLimitsConfig(BaseSettings):
     admin_import: str = "5/hour"
 
 
-class ScraperConfig(BaseSettings):
+class ScraperConfig(BaseModel):
     """Source scraper guardrails."""
 
     tripadvisor_enabled: bool = False
@@ -159,6 +169,14 @@ class Settings(BaseSettings):
     )
 
     app: AppConfig = Field(default_factory=AppConfig)
+    auth_bypass_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("AUTH_BYPASS_ENABLED", "auth_bypass_enabled"),
+    )
+    auth_bypass_user_email: str = Field(
+        default="dev-user@localhost.test",
+        validation_alias=AliasChoices("AUTH_BYPASS_USER_EMAIL", "auth_bypass_user_email"),
+    )
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
     jwt: JWTConfig = Field(default_factory=JWTConfig)
@@ -172,15 +190,21 @@ class Settings(BaseSettings):
     rate_limits: RateLimitsConfig = Field(default_factory=RateLimitsConfig)
     scraper: ScraperConfig = Field(default_factory=ScraperConfig)
 
+    @property
+    def auth_bypass_active(self) -> bool:
+        """Return whether the development-only authentication bypass is effective."""
+        return self.auth_bypass_enabled and self.app.environment in {
+            Environment.LOCAL,
+            Environment.DEVELOPMENT,
+        }
+
     @model_validator(mode="after")
     def validate_production_secrets(self) -> "Settings":
         """Fail fast for insecure production settings."""
         if self.app.environment is Environment.PRODUCTION:
             secret = self.jwt.secret_key.get_secret_value()
             insecure_markers = ("change-me", "development", "replace", "example")
-            if len(secret) < 32 or any(
-                marker in secret.casefold() for marker in insecure_markers
-            ):
+            if len(secret) < 32 or any(marker in secret.casefold() for marker in insecure_markers):
                 raise ValueError("Production JWT secret must be a strong external secret")
             if self.app.debug:
                 raise ValueError("Debug mode cannot be enabled in production")
@@ -193,16 +217,17 @@ class Settings(BaseSettings):
             database_url = self.database.url.get_secret_value().casefold()
             redis_url = self.redis.url.get_secret_value().casefold()
             if any(
-                marker in database_url
-                for marker in ("change-me", "url_encoded", "hotel:hotel@")
+                marker in database_url for marker in ("change-me", "url_encoded", "hotel:hotel@")
             ):
                 raise ValueError("Production database URL contains a placeholder")
             if "redis_password" in redis_url or redis_url == "redis://redis:6379/0":
                 raise ValueError("Production Redis URL contains a placeholder")
             if self.storage.backend == "gcs" and not self.storage.gcs_bucket:
                 raise ValueError("GCS bucket is required when storage backend is gcs")
-            if self.llm.provider == "openai" and self.llm.api_key is None:
-                raise ValueError("OpenAI provider requires an API key")
+            if self.llm.provider in {"openai", "anthropic"} and (
+                self.llm.api_key is None or not self.llm.api_key.get_secret_value().strip()
+            ):
+                raise ValueError(f"{self.llm.provider.title()} provider requires an API key")
         return self
 
 

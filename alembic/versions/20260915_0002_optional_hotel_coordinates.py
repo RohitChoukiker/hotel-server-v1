@@ -41,6 +41,18 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Restore required hotel coordinates when no null rows exist."""
+    bind = op.get_bind()
+    nullable_hotels = bind.scalar(
+        sa.text(
+            "SELECT count(*) FROM hotels WHERE latitude IS NULL "
+            "OR longitude IS NULL OR geo_location IS NULL"
+        )
+    )
+    if nullable_hotels:
+        raise RuntimeError(
+            "Cannot downgrade optional hotel coordinates while nullable hotel coordinates "
+            f"exist ({nullable_hotels} hotels)"
+        )
     op.alter_column(
         "hotels",
         "geo_location",

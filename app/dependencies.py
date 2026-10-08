@@ -16,7 +16,7 @@ from app.common.security import decode_token
 from app.config import Settings, get_settings
 from app.enums import UserRole, UserStatus
 from app.exceptions import ForbiddenError, UnauthorizedError
-from app.integrations.llm.base import StructuredTextInterpreter
+from app.integrations.llm.base import AdaptiveOnboardingProvider, StructuredTextInterpreter
 from app.integrations.storage.base import ObjectStorage
 from app.integrations.tasks import TaskDispatcher
 from app.models import User
@@ -56,6 +56,11 @@ def interpreter_dependency(request: Request) -> StructuredTextInterpreter:
     return request.app.state.text_interpreter
 
 
+def adaptive_provider_dependency(request: Request) -> AdaptiveOnboardingProvider:
+    """Inject the configured adaptive onboarding provider."""
+    return request.app.state.adaptive_onboarding_provider
+
+
 def storage_dependency(request: Request) -> ObjectStorage:
     """Inject immutable import object storage."""
     return request.app.state.object_storage
@@ -74,7 +79,18 @@ async def current_user(
 ) -> User:
     """Authenticate an active user from a bearer access token."""
     if credentials is None:
-        raise UnauthorizedError()
+        if request.headers.get("authorization") is not None or not settings.auth_bypass_active:
+            raise UnauthorizedError()
+        user = await UserRepository(session).get_by_email(settings.auth_bypass_user_email)
+        if (
+            user is None
+            or user.status != UserStatus.ACTIVE.value
+            or user.role != UserRole.USER.value
+        ):
+            raise UnauthorizedError()
+        request.state.user = user
+        structlog.contextvars.bind_contextvars(user_id=str(user.id))
+        return user
     payload = decode_token(credentials.credentials, "access", settings.jwt)
     try:
         user_id = uuid.UUID(str(payload["sub"]))
@@ -121,5 +137,8 @@ CurrentUserDep = Annotated[User, Depends(current_user)]
 RedisDep = Annotated[Redis, Depends(redis_dependency)]
 CacheDep = Annotated[Cache, Depends(cache_dependency)]
 InterpreterDep = Annotated[StructuredTextInterpreter, Depends(interpreter_dependency)]
+AdaptiveProviderDep = Annotated[
+    AdaptiveOnboardingProvider, Depends(adaptive_provider_dependency)
+]
 StorageDep = Annotated[ObjectStorage, Depends(storage_dependency)]
 TaskDispatcherDep = Annotated[TaskDispatcher, Depends(task_dispatcher_dependency)]

@@ -3,7 +3,7 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -54,17 +54,55 @@ class RecommendationRepository:
                 )
             )
         selected_ids = candidate_ids.order_by(Hotel.id).limit(limit).subquery()
+        # Keep provider metadata separate from the personalized rank. This is
+        # the same primary-source selection used by the hotel catalog.
+        source_ranked = (
+            select(
+                HotelSourceMapping.hotel_id,
+                HotelSourceMapping.source_rating,
+                HotelSourceMapping.source_review_count,
+                HotelSourceMapping.source_rank,
+                func.row_number()
+                .over(
+                    partition_by=HotelSourceMapping.hotel_id,
+                    order_by=(
+                        HotelSourceMapping.source_review_count.desc().nullslast(),
+                        HotelSourceMapping.source_rating.desc().nullslast(),
+                        HotelSourceMapping.id.asc(),
+                    ),
+                )
+                .label("rn"),
+            )
+            .where(HotelSourceMapping.is_active)
+            .subquery()
+        )
         query = (
             select(
                 Hotel.id.label("hotel_id"),
                 Hotel.name,
+                source_ranked.c.source_rating,
+                source_ranked.c.source_review_count,
+                source_ranked.c.source_rank,
                 Hotel.hotel_type,
                 HotelAttributeScore.attribute_id,
                 Attribute.name.label("attribute_name"),
                 Attribute.slug.label("attribute_slug"),
                 HotelAttributeScore.score_5,
+                HotelAttributeScore.score_100,
                 HotelAttributeScore.relative_score_5,
                 HotelAttributeScore.confidence_score,
+                HotelAttributeScore.mention_count,
+                HotelAttributeScore.positive_mentions,
+                HotelAttributeScore.negative_mentions,
+                HotelAttributeScore.neutral_mentions,
+                HotelAttributeScore.scoring_source,
+            )
+            .outerjoin(
+                source_ranked,
+                and_(
+                    source_ranked.c.hotel_id == Hotel.id,
+                    source_ranked.c.rn == 1,
+                ),
             )
             .outerjoin(
                 HotelAttributeScore,
@@ -77,7 +115,7 @@ class RecommendationRepository:
             .where(
                 Hotel.id.in_(select(selected_ids.c.id)),
             )
-            .order_by(Hotel.id)
+            .order_by(Hotel.id, HotelAttributeScore.attribute_id)
         )
         return [dict(row._mapping) for row in (await self._session.execute(query)).all()]
 

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Baga Sea Beach</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: #f5f5f5;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .image-card {
+      width: 100%;
+      max-width: 800px;
+      background: #ffffff;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+    }
+
+    .image-card img {
+      display: block;
+      width: 100%;
+      height: auto;
+      object-fit: cover;
+    }
+
+    .content {
+      padding: 20px;
+    }
+
+    .content h1 {
+      font-size: 24px;
+      margin-bottom: 8px;
+    }
+
+    .content p {
+      color: #666;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="image-card">
+
+    <img
+      width="600"
+      height="400"
+      alt="Baga Sea Beach"
+      loading="lazy"
+      data-scaled-link-image="true"
+      srcset="
+        https://dynamic-media-cdn.tripadvisor.com/media/photo-o/18/3e/36/95/baga-sea-beach.jpg?w=600&h=400&s=1 1x,
+        https://dynamic-media-cdn.tripadvisor.com/media/photo-o/18/3e/36/95/baga-sea-beach.jpg?w=800&h=500&s=1 2x
+      "
+      src="https://dynamic-media-cdn.tripadvisor.com/media/photo-o/0b/9d/e8/2a/hotel-arini-enterance.jpg?w=1024&h=768&s=1"
+    />
+
+    <div class="content">
+      <h1>Baga Sea Beach</h1>
+      <p>Image loaded directly from the TripAdvisor CDN.</p>
+    </div>
+
+  </div>
+
+</body>
+</html>

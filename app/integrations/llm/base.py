@@ -1,10 +1,11 @@
 """Typed structured-text interpretation contracts."""
 
 import uuid
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.dto.onboarding import NextQuestionDecision
 from app.enums import ChatIntent, Sentiment
 
 
@@ -62,3 +63,14 @@ class StructuredTextInterpreter(Protocol):
 
     async def extract_chat_intent(self, message: str) -> ChatIntentOutput:
         """Extract one supported assistant intent."""
+
+
+class AdaptiveOnboardingProvider(Protocol):
+    """Generate adaptive onboarding questions without ranking hotels."""
+
+    provider_name: str
+    model: str
+    prompt_version: str
+
+    async def generate_next_question(self, context: dict[str, Any]) -> NextQuestionDecision:
+        """Choose one next question or declare the questionnaire complete."""

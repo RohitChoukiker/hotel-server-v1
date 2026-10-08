@@ -28,6 +28,7 @@ from app.repositories.recommendations import RecommendationRepository
 from app.repositories.trips import TripRepository
 from app.repositories.users import UserRepository
 
+
 class RecommendationService:
     """Orchestrate live ranking from precomputed attribute scores."""
 
@@ -45,7 +46,9 @@ class RecommendationService:
     ) -> RecommendationRunRead:
         """Calculate, persist, and return a live deterministic ranking."""
         user = await self._users.get_by_id(user_id)
-        if user is None or not user.onboarding_completed:
+        if user is None or (
+            not user.onboarding_completed and user.onboarding_skipped_at is None
+        ):
             raise OnboardingNotCompletedError()
         trip = await self._trips.get_owned(payload.trip_id, user_id)
         if trip is None:
@@ -71,7 +74,11 @@ class RecommendationService:
         candidates = await self._recommendations.candidates(
             trip, algorithm, payload.hotel_type, payload.min_source_rating
         )
-        ranked = rank_hotels(candidates, preferences)[: payload.limit]
+        ranked = (
+            rank_hotels(candidates, preferences)
+            if preferences
+            else self._rank_without_preferences(candidates)
+        )[: payload.limit]
         run_id = uuid.uuid4()
         run = RecommendationRun(
             id=run_id,
@@ -135,6 +142,10 @@ class RecommendationService:
         results = [
             RecommendationResult(
                 **row,
+                source_rating=row["explanation"].get("source_rating"),
+                source_review_count=row["explanation"].get("source_review_count"),
+                source_rank=row["explanation"].get("source_rank"),
+                matched_attributes=_matched_attributes(row["explanation"]),
                 reasons=list(row["explanation"].get("reasons", [])),
             )
             for row in rows
@@ -159,6 +170,11 @@ class RecommendationService:
             hotel_id=hotel_id,
             personalized_rating=float(result.personalized_rating),
             match_score=float(result.match_score),
+            coverage_score=float(result.coverage_score),
+            source_rating=result.explanation.get("source_rating"),
+            source_review_count=result.explanation.get("source_review_count"),
+            source_rank=result.explanation.get("source_rank"),
+            matched_attributes=_matched_attributes(result.explanation),
             explanation=result.explanation,
         )
 
@@ -192,9 +208,70 @@ class RecommendationService:
                     personalized_rating=item.personalized_rating,
                     match_score=item.match_score,
                     coverage_score=item.coverage_score,
+                    source_rating=item.source_rating,
+                    source_review_count=item.source_review_count,
+                    source_rank=item.source_rank,
+                    matched_attributes=_matched_attributes(item.explanation),
                     reasons=list(item.explanation["reasons"]),
                     explanation=item.explanation,
                 )
                 for index, item in enumerate(ranked, start=1)
             ],
         )
+
+    @staticmethod
+    def _rank_without_preferences(
+        candidate_rows: list[dict[str, object]],
+    ) -> list[RankedHotel]:
+        """Return deterministic catalog candidates without fabricating personalization."""
+        ranked: list[RankedHotel] = []
+        seen: set[uuid.UUID] = set()
+        for row in candidate_rows:
+            hotel_id = row["hotel_id"]
+            if not isinstance(hotel_id, uuid.UUID) or hotel_id in seen:
+                continue
+            seen.add(hotel_id)
+            source_rating = _as_float(row.get("source_rating"))
+            source_review_count = _as_int(row.get("source_review_count"))
+            source_rank = _as_int(row.get("source_rank"))
+            ranked.append(
+                RankedHotel(
+                    hotel_id=hotel_id,
+                    name=str(row["name"]),
+                    personalized_rating=0.0,
+                    match_score=0.0,
+                    coverage_score=0.0,
+                    source_rating=source_rating,
+                    source_review_count=source_review_count,
+                    source_rank=source_rank,
+                    explanation={
+                        "matched_attributes": [],
+                        "strengths": [],
+                        "weaknesses": [],
+                        "reasons": [
+                            "No onboarding preferences available; showing catalog matches"
+                        ],
+                        "coverage_score": 0.0,
+                        "coverage_weight": 0.0,
+                        "requested_weight": 0.0,
+                        "source_rating": source_rating,
+                        "source_review_count": source_review_count,
+                        "source_rank": source_rank,
+                    },
+                )
+            )
+        return ranked
+
+
+def _matched_attributes(explanation: dict[str, object]) -> list[dict[str, object]]:
+    """Return persisted score evidence in the public result shape."""
+    values = explanation.get("matched_attributes", [])
+    return list(values) if isinstance(values, list) else []
+
+
+def _as_float(value: object) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _as_int(value: object) -> int | None:
+    return int(value) if value is not None else None

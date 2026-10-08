@@ -14,7 +14,7 @@ from app.api.errors import register_exception_handlers
 from app.api.health import router as health_router
 from app.api.v1.router import router as v1_router
 from app.common.cache import Cache
-from app.common.logging import configure_logging
+from app.common.logging import configure_logging, get_logger
 from app.common.middleware import (
     RequestContextMiddleware,
     RequestSizeLimitMiddleware,
@@ -23,6 +23,9 @@ from app.common.middleware import (
 from app.common.rate_limit import RateLimiter
 from app.config import Settings, get_settings
 from app.database import create_engine, create_session_factory
+from app.integrations.llm.adaptive import ClaudeUnavailableAdaptiveOnboardingProvider
+from app.integrations.llm.anthropic import AnthropicAdaptiveOnboardingProvider
+from app.integrations.llm.base import AdaptiveOnboardingProvider
 from app.integrations.llm.deterministic import DeterministicTextInterpreter
 from app.integrations.llm.openai_structured import OpenAIStructuredInterpreter
 from app.integrations.storage.gcs import GCSObjectStorage
@@ -31,7 +34,10 @@ from app.integrations.tasks import TaskDispatcher
 from app.workers.celery_app import celery_app
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    adaptive_provider: AdaptiveOnboardingProvider | None = None,
+) -> FastAPI:
     """Create an application with explicit lifecycle-managed dependencies."""
     config = settings or get_settings()
     configure_logging(config.logging)
@@ -45,6 +51,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        if config.auth_bypass_active:
+            get_logger().warning(
+                "AUTH_BYPASS_ACTIVE",
+                warning=(
+                    "DEVELOPMENT ONLY: JWT authentication is bypassed when no "
+                    "Authorization header is present"
+                ),
+                environment=config.app.environment.value,
+                dev_user_email=config.auth_bypass_user_email,
+            )
+        elif config.auth_bypass_enabled:
+            get_logger().warning(
+                "AUTH_BYPASS_IGNORED_NON_LOCAL_ENVIRONMENT",
+                environment=config.app.environment.value,
+            )
         engine = create_engine(config)
         redis = Redis.from_url(config.redis.url.get_secret_value(), decode_responses=True)
         http_client = httpx.AsyncClient()
@@ -68,6 +89,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         else:
             app.state.text_interpreter = DeterministicTextInterpreter()
+        if adaptive_provider is not None:
+            app.state.adaptive_onboarding_provider = adaptive_provider
+        elif (
+            config.llm.provider == "anthropic"
+            and config.llm.api_key is not None
+            and config.llm.api_key.get_secret_value().strip()
+        ):
+            app.state.adaptive_onboarding_provider = AnthropicAdaptiveOnboardingProvider(
+                config.llm, http_client
+            )
+        else:
+            app.state.adaptive_onboarding_provider = ClaudeUnavailableAdaptiveOnboardingProvider(
+                config.llm.model, config.llm.prompt_version
+            )
         try:
             yield
         finally:

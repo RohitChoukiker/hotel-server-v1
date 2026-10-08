@@ -51,6 +51,8 @@ class TripService:
         trip = await self._owned(user_id, trip_id)
         for field, value in payload.model_dump(mode="python").items():
             setattr(trip, field, value)
+        await self._session.flush()
+        await self._session.refresh(trip)
         await self._session.commit()
         return TripRead.model_validate(trip)
 

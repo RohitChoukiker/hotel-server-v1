@@ -2,7 +2,8 @@
 
 import uuid
 
-from sqlalchemy import func, literal, select, union_all
+from sqlalchemy import func, literal, or_, select, union_all
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import City, Country, Region
@@ -116,6 +117,65 @@ class LocationRepository:
         ).all()
         return [dict(row._mapping) for row in rows]
 
+    async def resolve_text(self, raw_text: str) -> dict[str, object] | None:
+        """Resolve comma-separated destination text against canonical geography."""
+        tokens = tuple(
+            dict.fromkeys(
+                token.strip().casefold()
+                for token in raw_text.split(",")
+                if token.strip()
+            )
+        )
+        if not tokens:
+            return None
+        rows = (
+            await self._session.execute(
+                select(City, Region, Country)
+                .join(Region, Region.id == City.region_id)
+                .join(Country, Country.id == Region.country_id)
+                .where(
+                    City.is_active,
+                    Region.is_active,
+                    Country.is_active,
+                    or_(
+                        func.lower(func.btrim(City.name)).in_(tokens),
+                        func.lower(func.btrim(Region.name)).in_(tokens),
+                        func.lower(func.btrim(Country.name)).in_(tokens),
+                    ),
+                )
+            )
+        ).all()
+        if not rows:
+            return None
+
+        def score(row: tuple[City, Region, Country]) -> tuple[int, int]:
+            city, region, country = row
+            city_match = int(city.name.strip().casefold() in tokens)
+            region_match = int(region.name.strip().casefold() in tokens)
+            country_match = int(country.name.strip().casefold() in tokens)
+            return (city_match * 4 + region_match * 2 + country_match, city_match)
+
+        city, region, country = max(rows, key=score)
+        city_match = city.name.strip().casefold() in tokens
+        region_match = region.name.strip().casefold() in tokens
+        parts = (
+            ([city.name] if city_match else [])
+            + ([region.name] if region_match or city_match else [])
+            + [country.name]
+        )
+        match_score = score((city, region, country))[0]
+        return {
+            "country_id": country.id,
+            "region_id": region.id if region_match or city_match else None,
+            "city_id": city.id if city_match else None,
+            "display_name": ", ".join(parts),
+            "normalized_location_text": ", ".join(parts).casefold(),
+            "resolution_status": "resolved",
+            "resolution_confidence": (
+                1.0 if match_score >= 6 else 0.9 if city_match else 0.8 if region_match else 0.7
+            ),
+        }
+
     async def find_country_by_iso2(self, iso2: str) -> Country | None:
         """Find a country by ISO-2 code."""
         return await self._session.scalar(select(Country).where(Country.iso2_code == iso2.upper()))
@@ -129,13 +189,49 @@ class LocationRepository:
         )
 
     async def find_city(self, region_id: uuid.UUID, name: str) -> City | None:
-        """Find a city only within the explicit region."""
+        """Find a normalized city name only within the explicit region."""
+        normalized_name = name.strip()
         return await self._session.scalar(
             select(City).where(
                 City.region_id == region_id,
-                func.lower(City.name) == name.casefold(),
+                func.lower(func.btrim(City.name)) == func.lower(normalized_name),
             )
         )
+
+    async def get_or_create_city(
+        self, region_id: uuid.UUID, name: str
+    ) -> tuple[City, bool]:
+        """Resolve or atomically create one normalized city within a region."""
+        normalized_name = name.strip()
+        city = await self.find_city(region_id, normalized_name)
+        if city is not None:
+            return city, False
+
+        city_id = uuid.uuid4()
+        statement = (
+            insert(City)
+            .values(
+                id=city_id,
+                region_id=region_id,
+                name=normalized_name,
+                latitude=None,
+                longitude=None,
+                timezone=None,
+                is_active=True,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    City.region_id,
+                    func.lower(func.btrim(City.name)),
+                ]
+            )
+            .returning(City.id)
+        )
+        inserted_id = await self._session.scalar(statement)
+        city = await self.find_city(region_id, normalized_name)
+        if city is None:
+            raise RuntimeError("City insert conflict did not resolve to a city")
+        return city, inserted_id is not None
 
     async def get_region(self, region_id: uuid.UUID) -> Region | None:
         """Return one active canonical region."""

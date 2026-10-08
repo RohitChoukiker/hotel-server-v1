@@ -130,6 +130,34 @@ async def import_reviews(
     return success(request, data)
 
 
+@router.post(
+    "/imports/sentiment-analysis",
+    response_model=SuccessResponse[JobAccepted],
+    dependencies=[Depends(rate_limit("admin_import"))],
+)
+async def import_sentiment_analysis(
+    request: Request,
+    session: SessionDep,
+    storage: StorageDep,
+    dispatcher: TaskDispatcherDep,
+    actor: User = Depends(operator),
+    file: UploadFile = File(...),
+    source_code: str = "TRIPADVISOR",
+) -> SuccessResponse[JobAccepted]:
+    """Stage and queue a precomputed sentiment JSONL import."""
+    job = await ImportService(session, storage).create_job(
+        ImportType.SENTIMENT_ANALYSIS,
+        source_code,
+        file.filename or "sentiment-analysis.jsonl",
+        _upload_chunks(file),
+        None,
+        None,
+        actor.id,
+    )
+    dispatcher.import_sentiment_analysis(job.id)
+    return success(request, JobAccepted(job_id=job.id, status=job.status))
+
+
 @router.get("/imports", response_model=ListResponse[ImportJobRead])
 async def imports(
     request: Request,
@@ -238,9 +266,7 @@ async def process_reviews(
     actor: User = Depends(operator),
 ) -> SuccessResponse[dict[str, bool]]:
     """Queue review attribute extraction."""
-    await AdminService(session).audit_action(
-        actor.id, "review_processing_started", "scoring"
-    )
+    await AdminService(session).audit_action(actor.id, "review_processing_started", "scoring")
     dispatcher.process_reviews()
     return success(request, {"queued": True})
 
@@ -283,9 +309,7 @@ async def normalize_scores(
     hotel_ids: list[uuid.UUID] = Query(default=[]),
 ) -> SuccessResponse[dict[str, bool]]:
     """Queue bell-curve normalization."""
-    AdminService.validate_normalization_scope(
-        scope, country_id, region_id, city_id, hotel_ids
-    )
+    AdminService.validate_normalization_scope(scope, country_id, region_id, city_id, hotel_ids)
     await AdminService(session).audit_action(
         actor.id,
         "normalization_started",
@@ -310,9 +334,7 @@ async def normalize_scores(
     return success(request, {"queued": True})
 
 
-@router.get(
-    "/data-quality/issues", response_model=SuccessResponse[list[DataQualityIssueRead]]
-)
+@router.get("/data-quality/issues", response_model=SuccessResponse[list[DataQualityIssueRead]])
 async def data_quality(
     request: Request,
     session: SessionDep,
@@ -340,9 +362,7 @@ async def scan_data_quality(
     actor: User = Depends(operator),
 ) -> SuccessResponse[dict[str, bool]]:
     """Queue an idempotent database consistency scan."""
-    await AdminService(session).audit_action(
-        actor.id, "data_quality_scan_started", "data_quality"
-    )
+    await AdminService(session).audit_action(actor.id, "data_quality_scan_started", "data_quality")
     dispatcher.scan_data_quality()
     return success(request, {"queued": True})
 
@@ -398,9 +418,7 @@ async def update_role(
     actor: User = Depends(admin_only),
 ) -> SuccessResponse[UserProfile]:
     """Update a user role and append an audit record."""
-    return success(
-        request, await UserService(session).change_role(actor.id, user_id, payload.role)
-    )
+    return success(request, await UserService(session).change_role(actor.id, user_id, payload.role))
 
 
 @router.patch("/users/{user_id}/status", response_model=SuccessResponse[UserProfile])
@@ -418,9 +436,7 @@ async def update_status(
     )
 
 
-@router.get(
-    "/algorithm-versions", response_model=SuccessResponse[list[AlgorithmVersionRead]]
-)
+@router.get("/algorithm-versions", response_model=SuccessResponse[list[AlgorithmVersionRead]])
 async def algorithm_versions(
     request: Request,
     session: SessionDep,
@@ -440,9 +456,7 @@ async def system_settings(
     return success(request, await AdminService(session).settings())
 
 
-@router.put(
-    "/settings/{key}", response_model=SuccessResponse[SystemSettingRead]
-)
+@router.put("/settings/{key}", response_model=SuccessResponse[SystemSettingRead])
 async def update_system_setting(
     key: str,
     payload: SystemSettingWrite,

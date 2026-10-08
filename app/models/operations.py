@@ -41,6 +41,19 @@ class ImportJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
     checkpoint: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    hotels_read: Mapped[int] = mapped_column(nullable=False, default=0)
+    hotels_matched: Mapped[int] = mapped_column(nullable=False, default=0)
+    hotels_failed: Mapped[int] = mapped_column(nullable=False, default=0)
+    attributes_seen: Mapped[int] = mapped_column(nullable=False, default=0)
+    attributes_processed: Mapped[int] = mapped_column(nullable=False, default=0)
+    attributes_inserted: Mapped[int] = mapped_column(nullable=False, default=0)
+    attributes_updated: Mapped[int] = mapped_column(nullable=False, default=0)
+    attributes_skipped_zero_mentions: Mapped[int] = mapped_column(nullable=False, default=0)
+    attributes_failed: Mapped[int] = mapped_column(nullable=False, default=0)
+    score_updates_applied: Mapped[int] = mapped_column(nullable=False, default=0)
+    score_updates_skipped_precedence: Mapped[int] = mapped_column(nullable=False, default=0)
+    unknown_hotels: Mapped[int] = mapped_column(nullable=False, default=0)
+    auto_created_attributes: Mapped[int] = mapped_column(nullable=False, default=0)
 
 
 class ScrapeRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):

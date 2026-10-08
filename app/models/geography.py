@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, String
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -61,6 +61,14 @@ class City(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+Index(
+    "uq_cities_region_normalized_name",
+    City.region_id,
+    func.lower(func.btrim(City.name)),
+    unique=True,
+)
+
+
 class Locality(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """Optional neighborhood/locality beneath a city."""
 
@@ -82,4 +90,3 @@ class Locality(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     location_type: Mapped[str | None] = mapped_column(String(64))
     latitude: Mapped[float | None]
     longitude: Mapped[float | None]
-

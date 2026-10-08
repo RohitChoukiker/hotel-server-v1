@@ -39,6 +39,7 @@ class UserService:
         except IntegrityError as exc:
             await self._session.rollback()
             raise PhoneAlreadyExistsError() from exc
+        await self._session.refresh(user)
         return UserProfile.model_validate(user)
 
     async def change_role(
@@ -58,6 +59,7 @@ class UserService:
             {"role": role.value},
         )
         await self._session.commit()
+        await self._session.refresh(user)
         return UserProfile.model_validate(user)
 
     async def change_status(
@@ -77,4 +79,5 @@ class UserService:
             {"status": status.value},
         )
         await self._session.commit()
+        await self._session.refresh(user)
         return UserProfile.model_validate(user)

@@ -25,6 +25,7 @@ from app.integrations.storage.local import LocalObjectStorage
 from app.models import ImportJob, ScrapeFailure, ScrapeRun
 from app.orchestrators.imports import CSVImportOrchestrator
 from app.orchestrators.scraper import ScrapeOrchestrator
+from app.orchestrators.sentiment_imports import SentimentAnalysisImportOrchestrator
 from app.services.data_quality import DataQualityService
 from app.services.scoring import ScoringService
 from app.workers.celery_app import celery_app
@@ -34,6 +35,7 @@ T = TypeVar("T")
 
 def _run(work: Callable[[AsyncSession, Settings], Awaitable[T]]) -> T:
     """Run one isolated async unit with a task-local engine."""
+
     async def execute() -> T:
         settings = get_settings()
         engine = create_engine(settings)
@@ -64,6 +66,7 @@ async def _interpreter(settings: Settings, client: httpx.AsyncClient) -> Any:
 @celery_app.task(name="app.workers.tasks.import_csv")
 def import_csv(job_id: str) -> None:
     """Process a staged, resumable CSV import."""
+
     async def work(session: AsyncSession, settings: Settings) -> str | None:
         job = await session.get(ImportJob, uuid.UUID(job_id))
         if job is None:
@@ -81,6 +84,20 @@ def import_csv(job_id: str) -> None:
         celery_app.send_task("app.workers.tasks.process_reviews")
 
 
+@celery_app.task(name="app.workers.tasks.import_sentiment_analysis")
+def import_sentiment_analysis(job_id: str) -> None:
+    """Process a staged precomputed sentiment JSONL import."""
+
+    async def work(session: AsyncSession, settings: Settings) -> None:
+        await SentimentAnalysisImportOrchestrator(
+            session,
+            _storage(settings),
+            settings.worker.import_batch_size,
+        ).run(uuid.UUID(job_id))
+
+    _run(work)
+
+
 @celery_app.task(
     bind=True,
     name="app.workers.tasks.process_reviews",
@@ -88,6 +105,7 @@ def import_csv(job_id: str) -> None:
 )
 def process_reviews(self: Any) -> int:
     """Run structured attribute extraction outside HTTP requests."""
+
     async def work(session: AsyncSession, settings: Settings) -> tuple[int, bool]:
         async with httpx.AsyncClient() as client:
             interpreter = await _interpreter(settings, client)
@@ -116,7 +134,7 @@ def process_reviews(self: Any) -> int:
             celery_app.send_task("app.workers.tasks.process_reviews", countdown=1)
         return processed
     except Exception as exc:
-        countdown = min(1800, 30 * (2 ** self.request.retries))
+        countdown = min(1800, 30 * (2**self.request.retries))
         get_logger().warning(
             "retry_scheduled",
             task="process_reviews",
@@ -136,6 +154,7 @@ def process_reviews(self: Any) -> int:
 @celery_app.task(name="app.workers.tasks.recalculate_hotel")
 def recalculate_hotel(hotel_id: str) -> int:
     """Recalculate one hotel's precomputed attribute aggregates."""
+
     async def work(session: AsyncSession, settings: Settings) -> int:
         del settings
         return await ScoringService(session, DeterministicTextInterpreter()).recalculate_hotel(
@@ -155,6 +174,7 @@ def normalize_scores(
     hotel_ids: list[str] | None = None,
 ) -> int:
     """Bell-curve normalize precomputed hotel scores."""
+
     async def work(session: AsyncSession, settings: Settings) -> int:
         del settings
         return await ScoringService(session, DeterministicTextInterpreter()).normalize(
@@ -172,6 +192,7 @@ def normalize_scores(
 @celery_app.task(name="app.workers.tasks.scan_data_quality")
 def scan_data_quality() -> int:
     """Run database-level quality checks outside HTTP requests."""
+
     async def work(session: AsyncSession, settings: Settings) -> int:
         del settings
         return await DataQualityService(session).scan()
@@ -200,22 +221,18 @@ def run_scrape(self: Any, run_id: str) -> int:
                     lock = candidate
                     break
             if lock is None:
-                raise DependencyUnavailableError(
-                    "Per-source scraper concurrency limit reached"
-                )
+                raise DependencyUnavailableError("Per-source scraper concurrency limit reached")
             async with httpx.AsyncClient() as client:
                 adapter = TripAdvisorAdapter(settings.scraper, client)
-                return await ScrapeOrchestrator(
-                    session, adapter, _storage(settings)
-                ).run(parsed_run_id)
+                return await ScrapeOrchestrator(session, adapter, _storage(settings)).run(
+                    parsed_run_id
+                )
         finally:
             if lock is not None:
                 try:
                     await lock.release()
                 except LockError:
-                    get_logger().warning(
-                        "scrape_lock_expired", run_id=str(parsed_run_id)
-                    )
+                    get_logger().warning("scrape_lock_expired", run_id=str(parsed_run_id))
             await redis.aclose()
 
     try:
@@ -223,6 +240,7 @@ def run_scrape(self: Any, run_id: str) -> int:
     except Exception as exc:
         settings = get_settings()
         if self.request.retries >= settings.scraper.max_retries:
+
             async def mark_failed(session: AsyncSession, task_settings: Settings) -> None:
                 async with httpx.AsyncClient() as client:
                     orchestrator = ScrapeOrchestrator(
@@ -237,7 +255,7 @@ def run_scrape(self: Any, run_id: str) -> int:
         if isinstance(exc, SourceRateLimitError):
             countdown = exc.retry_after_seconds
         else:
-            countdown = min(3600, 60 * (2 ** self.request.retries))
+            countdown = min(3600, 60 * (2**self.request.retries))
         get_logger().warning(
             "retry_scheduled",
             task="run_scrape",
@@ -251,6 +269,7 @@ def run_scrape(self: Any, run_id: str) -> int:
 @celery_app.task(name="app.workers.tasks.retry_scrape_failure")
 def retry_scrape_failure(failure_id: str) -> None:
     """Compatibility task that resumes the failure's checkpointed parent run."""
+
     async def work(session: AsyncSession, settings: Settings) -> str | None:
         del settings
         failure = await session.get(ScrapeFailure, uuid.UUID(failure_id))

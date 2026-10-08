@@ -15,6 +15,10 @@ class TaskDispatcher:
         """Queue a CSV import."""
         self._celery.send_task("app.workers.tasks.import_csv", args=[str(job_id)])
 
+    def import_sentiment_analysis(self, job_id: uuid.UUID) -> None:
+        """Queue a precomputed sentiment JSONL import."""
+        self._celery.send_task("app.workers.tasks.import_sentiment_analysis", args=[str(job_id)])
+
     def process_reviews(self) -> None:
         """Queue review attribute extraction."""
         self._celery.send_task("app.workers.tasks.process_reviews")

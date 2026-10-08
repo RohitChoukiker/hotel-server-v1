@@ -1,13 +1,29 @@
 """CSV parsing and data-quality classification unit tests."""
 
+import importlib.util
 import unittest
 from datetime import date
+from pathlib import Path
+from types import ModuleType
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from app.dto.hotels import HotelListItem
 from app.exceptions import ImportValidationError
 from app.models import Hotel
 from app.orchestrators.imports import HOTEL_COLUMNS, CSVImportOrchestrator
+
+
+def _optional_coordinates_migration() -> ModuleType:
+    path = (
+        Path(__file__).parents[2]
+        / "alembic/versions/20260915_0002_optional_hotel_coordinates.py"
+    )
+    spec = importlib.util.spec_from_file_location("optional_hotel_coordinates", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
 
 
 class ImportValidationTests(unittest.TestCase):
@@ -63,6 +79,20 @@ class ImportValidationTests(unittest.TestCase):
 
         self.assertIsNone(hotel.latitude)
         self.assertIsNone(hotel.longitude)
+
+    def test_coordinate_migration_refuses_destructive_downgrade(self) -> None:
+        migration = _optional_coordinates_migration()
+        connection = Mock()
+        connection.scalar.return_value = 1
+
+        with (
+            patch.object(migration.op, "get_bind", return_value=connection),
+            patch.object(migration.op, "alter_column") as alter_column,
+            self.assertRaisesRegex(RuntimeError, "nullable hotel coordinates"),
+        ):
+            migration.downgrade()
+
+        alter_column.assert_not_called()
 
     def test_dates_and_invalid_date(self) -> None:
         self.assertEqual(

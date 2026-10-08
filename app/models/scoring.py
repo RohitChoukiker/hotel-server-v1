@@ -4,7 +4,17 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -15,8 +25,12 @@ class AttributeCategory(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """Top-level score category."""
 
     __tablename__ = "attribute_categories"
+    __table_args__ = (
+        UniqueConstraint("normalized_key", name="uq_attribute_categories_normalized_key"),
+    )
 
     code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    normalized_key: Mapped[str] = mapped_column(String(160), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     display_order: Mapped[int] = mapped_column(nullable=False, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -26,13 +40,19 @@ class Attribute(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """Review-derived scoring dimension."""
 
     __tablename__ = "attributes"
-    __table_args__ = (UniqueConstraint("category_id", "slug"),)
+    __table_args__ = (
+        UniqueConstraint("category_id", "slug"),
+        UniqueConstraint(
+            "category_id", "normalized_key", name="uq_attributes_category_normalized_key"
+        ),
+    )
 
     category_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("attribute_categories.id"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     slug: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    normalized_key: Mapped[str] = mapped_column(String(160), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     value_type: Mapped[str] = mapped_column(String(40), nullable=False, default="SCORE")
     display_order: Mapped[int] = mapped_column(nullable=False, default=0)
@@ -150,7 +170,84 @@ class HotelAttributeScore(Base):
     z_score: Mapped[float | None] = mapped_column(Numeric(8, 4))
     relative_score_5: Mapped[float | None] = mapped_column(Numeric(7, 4))
     confidence_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    scoring_source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="review_based", server_default="review_based"
+    )
+    analysis_version: Mapped[str | None] = mapped_column(String(160))
+    review_window: Mapped[str | None] = mapped_column(String(160))
+    imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class HotelAttributeSentimentAggregate(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Source-provided hotel/attribute sentiment aggregate."""
+
+    __tablename__ = "hotel_attribute_sentiment_aggregates"
+    __table_args__ = (
+        UniqueConstraint(
+            "hotel_id",
+            "attribute_id",
+            "source_id",
+            "analysis_version",
+            "review_window",
+            name="uq_sentiment_aggregate_identity",
+        ),
+        Index("ix_sentiment_aggregates_hotel", "hotel_id"),
+        Index("ix_sentiment_aggregates_attribute", "attribute_id"),
+        Index("ix_sentiment_aggregates_source", "source_id"),
+        Index("ix_sentiment_aggregates_window", "analysis_version", "review_window"),
+        CheckConstraint(
+            "sentiment IN ('POSITIVE', 'NEGATIVE', 'NEUTRAL')",
+            name="sentiment_value",
+        ),
+        CheckConstraint(
+            "total_mentions >= 0 AND positive_mentions >= 0 AND negative_mentions >= 0",
+            name="mention_counts_nonnegative",
+        ),
+        CheckConstraint(
+            "positive_mentions + negative_mentions <= total_mentions",
+            name="mention_counts_consistent",
+        ),
+        CheckConstraint("reviews_analyzed >= 0", name="reviews_analyzed_nonnegative"),
+        CheckConstraint(
+            "aggregate_score_0_5 >= 0 AND aggregate_score_0_5 <= 5",
+            name="aggregate_score_range",
+        ),
+        CheckConstraint(
+            "scoring_source = 'aggregate_sentiment'",
+            name="aggregate_scoring_source",
+        ),
+    )
+
+    hotel_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("hotels.id", ondelete="CASCADE"), nullable=False
+    )
+    attribute_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("attributes.id", ondelete="RESTRICT"), nullable=False
+    )
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("data_sources.id", ondelete="RESTRICT"), nullable=False
+    )
+    category_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    raw_attribute_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    sentiment: Mapped[str] = mapped_column(String(16), nullable=False)
+    positive_mentions: Mapped[int] = mapped_column(nullable=False)
+    negative_mentions: Mapped[int] = mapped_column(nullable=False)
+    total_mentions: Mapped[int] = mapped_column(nullable=False)
+    reviews_analyzed: Mapped[int] = mapped_column(nullable=False)
+    analysis_mode: Mapped[str] = mapped_column(String(160), nullable=False)
+    analysis_version: Mapped[str] = mapped_column(String(160), nullable=False)
+    review_window: Mapped[str] = mapped_column(String(160), nullable=False)
+    aggregate_score_0_5: Mapped[float] = mapped_column(Numeric(7, 4), nullable=False)
+    scoring_source: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="aggregate_sentiment",
+        server_default="aggregate_sentiment",
+    )
+    metadata_payload: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict
+    )
 
 
 class NormalizationRun(UUIDPrimaryKeyMixin, Base):

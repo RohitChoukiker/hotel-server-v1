@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.database import create_engine, create_session_factory
@@ -20,6 +21,14 @@ pytestmark = pytest.mark.integration
 
 async def _chunks(content: bytes) -> AsyncIterator[bytes]:
     yield content
+
+
+class _TrackingCache:
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+
+    async def delete(self, *keys: str) -> None:
+        self.deleted.extend(keys)
 
 
 @pytest.mark.asyncio
@@ -133,6 +142,7 @@ async def test_hotel_import_allows_optional_coordinates_and_rejects_invalid_valu
     country_id = stable_id("country:IN")
     region_id = stable_id("region:IN:GA")
     city_name = f"Coordinate City {uuid.uuid4()}"
+    auto_created_city_name = f"Auto Created City {uuid.uuid4()}"
     row_ids = {
         name: f"{name}-{uuid.uuid4()}"
         for name in (
@@ -146,6 +156,7 @@ async def test_hotel_import_allows_optional_coordinates_and_rejects_invalid_valu
             "missing-city",
         )
     }
+    cache = _TrackingCache()
     async with factory() as session:
         session.add(
             City(
@@ -168,7 +179,7 @@ async def test_hotel_import_allows_optional_coordinates_and_rejects_invalid_valu
             f"{row_ids['malformed']},Malformed Coordinates,{city_name},abc,92.71\n"
             f"{row_ids['latitude-out-of-range']},Bad Latitude,{city_name},999,92.71\n"
             f"{row_ids['longitude-out-of-range']},Bad Longitude,{city_name},23.72,999\n"
-            f"{row_ids['missing-city']},Missing City,Unknown City,,\n"
+            f"{row_ids['missing-city']},Missing City,{auto_created_city_name},,\n"
         ).encode()
         job = await ImportService(session, storage).create_job(
             ImportType.HOTELS,
@@ -178,11 +189,12 @@ async def test_hotel_import_allows_optional_coordinates_and_rejects_invalid_valu
             country_id,
             region_id,
         )
-        await CSVImportOrchestrator(session, storage, 100).run(job.id)
+        await CSVImportOrchestrator(session, storage, 100, cache=cache).run(job.id)
 
-        assert job.inserted == 4
-        assert job.failed == 4
+        assert job.inserted == 5
+        assert job.failed == 3
         assert job.status == "PARTIAL"
+        assert cache.deleted == [f"locations:region:{region_id}:cities:v1"]
 
         imported = {
             row.source_hotel_id: row
@@ -222,7 +234,10 @@ async def test_hotel_import_allows_optional_coordinates_and_rejects_invalid_valu
         assert row_ids["malformed"] not in imported
         assert row_ids["latitude-out-of-range"] not in imported
         assert row_ids["longitude-out-of-range"] not in imported
-        assert row_ids["missing-city"] not in imported
+        auto_created = imported[row_ids["missing-city"]]
+        assert auto_created.latitude is None
+        assert auto_created.longitude is None
+        assert auto_created.geo_location is None
 
         issue_types = set(
             (
@@ -237,6 +252,243 @@ async def test_hotel_import_allows_optional_coordinates_and_rejects_invalid_valu
             "IMPORT_VALIDATION_ERROR",
             "INVALID_LATITUDE",
             "INVALID_LONGITUDE",
-            "MISSING_CITY",
+            "AUTO_CREATED_CITY",
         } <= issue_types
+
+        no_coordinate_columns_id = f"no-coordinate-columns-{uuid.uuid4()}"
+        no_coordinate_columns_csv = (
+            "locationId,name,city\n"
+            f"{no_coordinate_columns_id},No Coordinate Columns,{city_name}\n"
+        ).encode()
+        no_coordinate_columns_job = await ImportService(
+            session, storage
+        ).create_job(
+            ImportType.HOTELS,
+            "TRIPADVISOR",
+            "no-coordinate-columns.csv",
+            _chunks(no_coordinate_columns_csv),
+            country_id,
+            region_id,
+        )
+        await CSVImportOrchestrator(session, storage, 100).run(
+            no_coordinate_columns_job.id
+        )
+
+        imported_without_columns = (
+            await session.execute(
+                select(Hotel.latitude, Hotel.longitude, Hotel.geo_location)
+                .join(HotelSourceMapping, HotelSourceMapping.hotel_id == Hotel.id)
+                .where(
+                    HotelSourceMapping.source_hotel_id == no_coordinate_columns_id
+                )
+            )
+        ).one()
+        assert no_coordinate_columns_job.inserted == 1
+        assert imported_without_columns.latitude is None
+        assert imported_without_columns.longitude is None
+        assert imported_without_columns.geo_location is None
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_hotel_import_resolves_or_creates_cities_without_changing_row_counters(
+    tmp_path: object,
+) -> None:
+    """Catch missing-city failures, case duplicates, and counter regressions."""
+    await seed()
+    settings = get_settings()
+    engine = create_engine(settings)
+    factory = create_session_factory(engine)
+    storage = LocalObjectStorage(tmp_path)  # type: ignore[arg-type]
+    country_id = stable_id("country:IN")
+    region_id = stable_id("region:IN:GA")
+    existing_name = f"Existing City {uuid.uuid4()}"
+    new_name = f"New City {uuid.uuid4()}"
+    row_ids = {
+        "existing": f"existing-{uuid.uuid4()}",
+        "new-one": f"new-one-{uuid.uuid4()}",
+        "new-two": f"new-two-{uuid.uuid4()}",
+        "blank": f"blank-{uuid.uuid4()}",
+    }
+
+    async with factory() as session:
+        existing_city = City(
+            region_id=region_id,
+            name=existing_name,
+            latitude=15.4,
+            longitude=73.8,
+            timezone="Asia/Kolkata",
+            is_active=True,
+        )
+        session.add(existing_city)
+        await session.commit()
+        existing_city_id = existing_city.id
+
+        hotel_csv = (
+            "locationId,name,city\n"
+            f"{row_ids['existing']},Existing Hotel,  {existing_name.swapcase()}  \n"
+            f"{row_ids['new-one']},New Hotel One,  {new_name}  \n"
+            f"{row_ids['new-two']},New Hotel Two,{new_name.swapcase()}\n"
+            f"{row_ids['blank']},Blank City Hotel,   \n"
+        ).encode()
+        job = await ImportService(session, storage).create_job(
+            ImportType.HOTELS,
+            "TRIPADVISOR",
+            "city-resolution.csv",
+            _chunks(hotel_csv),
+            country_id,
+            region_id,
+        )
+        await CSVImportOrchestrator(session, storage, 100).run(job.id)
+
+        assert job.records_read == 4
+        assert job.inserted == 3
+        assert job.updated == 0
+        assert job.failed == 1
+        assert job.status == "PARTIAL"
+
+        imported_city_ids = dict(
+            (
+                await session.execute(
+                    select(HotelSourceMapping.source_hotel_id, Hotel.city_id)
+                    .join(Hotel, Hotel.id == HotelSourceMapping.hotel_id)
+                    .where(HotelSourceMapping.source_hotel_id.in_(row_ids.values()))
+                )
+            ).all()
+        )
+        assert imported_city_ids[row_ids["existing"]] == existing_city_id
+        assert row_ids["blank"] not in imported_city_ids
+
+        normalized_new_cities = list(
+            (
+                await session.scalars(
+                    select(City).where(
+                        City.region_id == region_id,
+                        func.lower(func.btrim(City.name)) == new_name.casefold(),
+                    )
+                )
+            ).all()
+        )
+        assert len(normalized_new_cities) == 1
+        created_city = normalized_new_cities[0]
+        assert created_city.name == new_name
+        assert created_city.latitude is None
+        assert created_city.longitude is None
+        assert created_city.timezone is None
+        assert created_city.is_active is True
+        assert imported_city_ids[row_ids["new-one"]] == created_city.id
+        assert imported_city_ids[row_ids["new-two"]] == created_city.id
+
+        existing_city_count = await session.scalar(
+            select(func.count())
+            .select_from(City)
+            .where(
+                City.region_id == region_id,
+                func.lower(func.btrim(City.name)) == existing_name.casefold(),
+            )
+        )
+        assert existing_city_count == 1
+
+        auto_created_issue = (
+            await session.scalars(
+                select(DataQualityIssue).where(
+                    DataQualityIssue.import_job_id == job.id,
+                    DataQualityIssue.issue_type == "AUTO_CREATED_CITY",
+                )
+            )
+        ).one()
+        assert auto_created_issue.severity == "INFO"
+        assert auto_created_issue.details == {
+            "city_name": new_name,
+            "region_id": str(region_id),
+        }
+
+        blank_city_issue = (
+            await session.scalars(
+                select(DataQualityIssue).where(
+                    DataQualityIssue.import_job_id == job.id,
+                    DataQualityIssue.source_entity_id == row_ids["blank"],
+                )
+            )
+        ).one()
+        assert blank_city_issue.issue_type == "IMPORT_VALIDATION_ERROR"
+        assert "Missing required field: city" in blank_city_issue.details["error"]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_hotel_import_completes_when_every_city_must_be_created(
+    tmp_path: object,
+) -> None:
+    """Catch regressions that still classify absent valid cities as row failures."""
+    await seed()
+    settings = get_settings()
+    engine = create_engine(settings)
+    factory = create_session_factory(engine)
+    storage = LocalObjectStorage(tmp_path)  # type: ignore[arg-type]
+    country_id = stable_id("country:IN")
+    region_id = stable_id("region:IN:GA")
+    first_city = f"First Missing City {uuid.uuid4()}"
+    second_city = f"Second Missing City {uuid.uuid4()}"
+    first_hotel_id = f"first-missing-{uuid.uuid4()}"
+    second_hotel_id = f"second-missing-{uuid.uuid4()}"
+
+    async with factory() as session:
+        hotel_csv = (
+            "locationId,name,city\n"
+            f"{first_hotel_id},First Missing Hotel,{first_city}\n"
+            f"{second_hotel_id},Second Missing Hotel,{second_city}\n"
+        ).encode()
+        job = await ImportService(session, storage).create_job(
+            ImportType.HOTELS,
+            "TRIPADVISOR",
+            "all-new-cities.csv",
+            _chunks(hotel_csv),
+            country_id,
+            region_id,
+        )
+        await CSVImportOrchestrator(session, storage, 100).run(job.id)
+
+        assert job.records_read == 2
+        assert job.inserted == 2
+        assert job.updated == 0
+        assert job.failed == 0
+        assert job.status == "COMPLETED"
+        imported_count = await session.scalar(
+            select(func.count())
+            .select_from(HotelSourceMapping)
+            .where(
+                HotelSourceMapping.source_hotel_id.in_(
+                    (first_hotel_id, second_hotel_id)
+                )
+            )
+        )
+        assert imported_count == 2
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_city_names_are_unique_per_region_ignoring_case_and_whitespace() -> None:
+    """Catch schema regressions that allow concurrent normalized duplicates."""
+    await seed()
+    settings = get_settings()
+    engine = create_engine(settings)
+    factory = create_session_factory(engine)
+    region_id = stable_id("region:IN:GA")
+    city_name = f"Constraint City {uuid.uuid4()}"
+
+    async with factory() as session:
+        try:
+            session.add(City(region_id=region_id, name=city_name, is_active=True))
+            session.add(
+                City(
+                    region_id=region_id,
+                    name=f"  {city_name.swapcase()}  ",
+                    is_active=True,
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await session.flush()
+        finally:
+            await session.rollback()
     await engine.dispose()

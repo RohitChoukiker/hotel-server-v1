@@ -20,9 +20,19 @@ class RecommendationRequest(DTO):
 class MatchedAttribute(DTO):
     """One explainability factor."""
 
+    attribute_id: uuid.UUID | None = None
     attribute: str
     score: float
     weight: float
+    score_5: float | None = None
+    score_100: float | None = None
+    relative_score_5: float | None = None
+    confidence_score: float | None = None
+    mention_count: int | None = None
+    positive_mentions: int | None = None
+    negative_mentions: int | None = None
+    neutral_mentions: int | None = None
+    scoring_source: str | None = None
 
 
 class RecommendationResult(DTO):
@@ -34,6 +44,10 @@ class RecommendationResult(DTO):
     personalized_rating: float
     match_score: float
     coverage_score: float
+    source_rating: float | None = None
+    source_review_count: int | None = None
+    source_rank: int | None = None
+    matched_attributes: list[MatchedAttribute] = Field(default_factory=list)
     reasons: list[str]
     explanation: dict[str, Any]
 
@@ -53,5 +67,9 @@ class RecommendationDetail(DTO):
     hotel_id: uuid.UUID
     personalized_rating: float
     match_score: float
+    coverage_score: float
+    source_rating: float | None = None
+    source_review_count: int | None = None
+    source_rank: int | None = None
+    matched_attributes: list[MatchedAttribute] = Field(default_factory=list)
     explanation: dict[str, Any]
-

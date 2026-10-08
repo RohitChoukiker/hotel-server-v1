@@ -15,11 +15,12 @@ class UserRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get_by_id(self, user_id: uuid.UUID) -> User | None:
+    async def get_by_id(self, user_id: uuid.UUID, for_update: bool = False) -> User | None:
         """Return a non-deleted user by ID."""
-        return await self._session.scalar(
-            select(User).where(User.id == user_id, User.deleted_at.is_(None))
-        )
+        query = select(User).where(User.id == user_id, User.deleted_at.is_(None))
+        if for_update:
+            query = query.execution_options(populate_existing=True).with_for_update()
+        return await self._session.scalar(query)
 
     async def get_by_email(self, email: str) -> User | None:
         """Return a non-deleted user by normalized email."""

@@ -77,10 +77,54 @@ class RankingTests(unittest.TestCase):
         self.assertEqual(result.personalized_rating, 4.8)
         self.assertEqual(result.coverage_score, 0.5)
 
-    def test_relative_missing_falls_back_to_absolute_score(self) -> None:
+    def test_missing_normalized_evidence_reduces_coverage(self) -> None:
+        rows = [
+            self.rows[0],
+            self._row(self.hotel_a, "A", self.wifi, "WiFi", None, 5.0),
+        ]
+        result = rank_hotels(
+            rows,
+            [
+                EffectivePreference(self.cleanliness, 1.0, None, False),
+                EffectivePreference(self.wifi, 1.0, None, False),
+            ],
+        )[0]
+        self.assertEqual(result.personalized_rating, 4.8)
+        self.assertEqual(result.coverage_score, 0.5)
+
+    def test_relative_missing_is_missing_evidence(self) -> None:
         rows = [self._row(self.hotel_a, "A", self.wifi, "WiFi", None, 4.2)]
+        result = rank_hotels(rows, [EffectivePreference(self.wifi, 1.0, None, False)])
+        self.assertEqual(result, [])
+
+    def test_no_linear_fallback_for_hundred_scale(self) -> None:
+        rows = [
+            {
+                **self._row(self.hotel_a, "A", self.wifi, "WiFi", None),
+                "score_100": 84.0,
+            }
+        ]
+        result = rank_hotels(rows, [EffectivePreference(self.wifi, 1.0, None, False)])
+        self.assertEqual(result, [])
+
+    def test_normalized_score_is_preferred_over_linear_fields(self) -> None:
+        rows = [
+            {
+                **self._row(self.hotel_a, "A", self.wifi, "WiFi", 4.6, 1.0),
+                "score_100": 20.0,
+            }
+        ]
         result = rank_hotels(rows, [EffectivePreference(self.wifi, 1.0, None, False)])[0]
-        self.assertEqual(result.personalized_rating, 4.2)
+        self.assertEqual(result.personalized_rating, 4.6)
+        self.assertEqual(result.match_score, 92.0)
+
+    def test_match_score_matches_public_personalized_rating(self) -> None:
+        result = rank_hotels(
+            [self._row(self.hotel_a, "A", self.wifi, "WiFi", 2.3937)],
+            [EffectivePreference(self.wifi, 1.0, None, False)],
+        )[0]
+        self.assertEqual(result.personalized_rating, 2.394)
+        self.assertEqual(result.match_score, 47.88)
 
     def test_zero_total_weight_raises(self) -> None:
         with self.assertRaises(ScoringError):
@@ -103,6 +147,40 @@ class RankingTests(unittest.TestCase):
         self.assertIn("reasons", result.explanation)
         self.assertEqual(result.match_score, 96.0)
 
+    def test_equal_score_uses_stable_source_metadata_then_id(self) -> None:
+        rows = [
+            {
+                **self._row(self.hotel_a, "A", self.wifi, "WiFi", 4.0),
+                "source_rating": 4.0,
+                "source_review_count": 10,
+                "source_rank": 99,
+            },
+            {
+                **self._row(self.hotel_b, "B", self.wifi, "WiFi", 4.0),
+                "source_rating": 4.5,
+                "source_review_count": 1,
+                "source_rank": 1,
+            },
+        ]
+        ranked = rank_hotels(rows, [EffectivePreference(self.wifi, 1.0, None, False)])
+        self.assertEqual([item.hotel_id for item in ranked], [self.hotel_b, self.hotel_a])
+        self.assertEqual(ranked[0].source_rank, 1)
+
+    def test_explanation_contains_score_support_metadata(self) -> None:
+        row = {
+            **self._row(self.hotel_a, "A", self.wifi, "WiFi", 4.5),
+            "score_5": 4.2,
+            "score_100": 84.0,
+            "confidence_score": 0.8,
+            "mention_count": 12,
+            "scoring_source": "review_based",
+        }
+        result = rank_hotels([row], [EffectivePreference(self.wifi, 1.0, None, False)])[0]
+        matched = result.explanation["matched_attributes"][0]
+        self.assertEqual(matched["relative_score_5"], 4.5)
+        self.assertEqual(matched["mention_count"], 12)
+        self.assertEqual(result.explanation["coverage_weight"], 1.0)
+
     def test_weakness_is_explained(self) -> None:
         rows = [self._row(self.hotel_a, "A", self.wifi, "WiFi", 2.0)]
         result = rank_hotels(rows, [EffectivePreference(self.wifi, 1.0, None, False)])[0]
@@ -115,4 +193,3 @@ class RankingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

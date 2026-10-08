@@ -8,12 +8,15 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.sentiment import normalize_taxonomy_key
 from app.dto.hotels import HotelSearchFilters
 from app.dto.reviews import ReviewFilters
+from app.enums import ScoringSource
 from app.models import (
     AlgorithmVersion,
     Amenity,
     Attribute,
+    AttributeAlias,
     AttributeCategory,
     City,
     Country,
@@ -244,7 +247,7 @@ class HotelRepository:
         summary = summary_query.subquery()
         query = (
             select(
-                *[summary.c[column] for column in summary.c.keys()],
+                *[summary.c[column] for column in summary.c.keys()],  # noqa: SIM118
                 Hotel.address,
                 Hotel.postal_code,
                 Hotel.telephone,
@@ -638,6 +641,34 @@ class AttributeRepository:
             select(Attribute).where(Attribute.slug == slug, Attribute.is_active)
         )
 
+    async def resolve_onboarding_attribute(self, semantic_slug: str) -> dict[str, Any] | None:
+        """Resolve a provider concept through exact taxonomy keys or active aliases."""
+        normalized = normalize_taxonomy_key(semantic_slug)
+        exact = await self._session.scalar(
+            select(Attribute).where(
+                Attribute.is_active,
+                (Attribute.slug == normalized) | (Attribute.normalized_key == normalized),
+            )
+        )
+        if exact is not None:
+            return {"id": exact.id, "slug": exact.slug, "name": exact.name}
+        alias_rows = (
+            await self._session.execute(
+                select(Attribute, AttributeAlias.alias)
+                .join(AttributeAlias, AttributeAlias.attribute_id == Attribute.id)
+                .where(Attribute.is_active, AttributeAlias.is_active)
+            )
+        ).all()
+        matches = {
+            attribute.id: attribute
+            for attribute, alias in alias_rows
+            if normalize_taxonomy_key(str(alias)) == normalized
+        }
+        if len(matches) != 1:
+            return None
+        attribute = matches[0]
+        return {"id": attribute.id, "slug": attribute.slug, "name": attribute.name}
+
     async def hotel_scores(
         self,
         hotel_id: uuid.UUID,
@@ -758,6 +789,23 @@ class AttributeRepository:
             },
         )
         await self._session.execute(statement)
+
+    async def upsert_aggregate_hotel_scores(self, values: list[dict[str, Any]]) -> int:
+        """Conditionally apply aggregate scores without replacing review scores."""
+        if not values:
+            return 0
+        statement = insert(HotelAttributeScore).values(values)
+        statement = statement.on_conflict_do_update(
+            index_elements=["hotel_id", "attribute_id", "algorithm_version_id"],
+            set_={
+                key: value
+                for key, value in values[0].items()
+                if key not in {"hotel_id", "attribute_id", "algorithm_version_id"}
+            },
+            where=HotelAttributeScore.scoring_source
+            == ScoringSource.AGGREGATE_SENTIMENT.value,
+        ).returning(HotelAttributeScore.hotel_id, HotelAttributeScore.attribute_id)
+        return len((await self._session.execute(statement)).all())
 
     async def score_population(
         self,

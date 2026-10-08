@@ -6,6 +6,7 @@ from enum import StrEnum
 class Environment(StrEnum):
     """Supported runtime environments."""
 
+    LOCAL = "local"
     DEVELOPMENT = "development"
     TEST = "test"
     STAGING = "staging"
@@ -50,6 +51,7 @@ class PreferenceSource(StrEnum):
     """Preference provenance and precedence."""
 
     ONBOARDING_AI = "ONBOARDING_AI"
+    ONBOARDING_DETERMINISTIC = "ONBOARDING_DETERMINISTIC"
     USER_MANUAL = "USER_MANUAL"
 
 
@@ -89,6 +91,14 @@ class ImportType(StrEnum):
 
     HOTELS = "HOTELS"
     REVIEWS = "REVIEWS"
+    SENTIMENT_ANALYSIS = "SENTIMENT_ANALYSIS"
+
+
+class ScoringSource(StrEnum):
+    """Provenance of a precomputed hotel attribute score."""
+
+    REVIEW_BASED = "review_based"
+    AGGREGATE_SENTIMENT = "aggregate_sentiment"
 
 
 class ScopeType(StrEnum):
@@ -115,4 +125,3 @@ class ChatIntent(StrEnum):
     UPDATE_TRIP_PREFERENCE = "UPDATE_TRIP_PREFERENCE"
     CREATE_TRIP = "CREATE_TRIP"
     GENERAL_HOTEL_QUESTION = "GENERAL_HOTEL_QUESTION"
-

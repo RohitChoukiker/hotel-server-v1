@@ -11,6 +11,7 @@ from typing import Any
 from geoalchemy2.elements import WKTElement
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.cache import Cache
 from app.common.logging import get_logger
 from app.domain.scoring import normalize_rating
 from app.enums import JobStatus
@@ -33,10 +34,12 @@ class CSVImportOrchestrator:
         session: AsyncSession,
         storage: ObjectStorage,
         batch_size: int,
+        cache: Cache | None = None,
     ) -> None:
         self._session = session
         self._storage = storage
         self._batch_size = batch_size
+        self._cache = cache
         self._jobs = ImportJobRepository(session)
         self._hotels = HotelRepository(session)
         self._reviews = ReviewRepository(session)
@@ -121,9 +124,21 @@ class CSVImportOrchestrator:
         latitude = self._coordinate(row.get("latitude"), -90, 90, "latitude")
         longitude = self._coordinate(row.get("longitude"), -180, 180, "longitude")
         assert job.region_id is not None
-        city = await self._locations.find_city(job.region_id, city_name)
-        if city is None:
-            raise ImportValidationError(f"MISSING_CITY: {city_name}")
+        city, city_created = await self._locations.get_or_create_city(
+            job.region_id, city_name
+        )
+        if city_created:
+            await self._quality.add(
+                "AUTO_CREATED_CITY",
+                "INFO",
+                {"city_name": city.name, "region_id": str(job.region_id)},
+                source_id=job.source_id,
+                import_job_id=job.id,
+                entity_type="CITY",
+                source_entity_id=source_hotel_id,
+            )
+            if self._cache is not None:
+                await self._cache.delete(f"locations:region:{job.region_id}:cities:v1")
         now = datetime.now(UTC)
         hotel_id, inserted = await self._hotels.upsert_source_hotel(
             {
